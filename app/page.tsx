@@ -1,3 +1,5 @@
+PS C:\Users\manoj\my-vault> cd C:\Users\manoj\my-vault
+PS C:\Users\manoj\my-vault> Get-Content app\page.tsx
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -34,10 +36,10 @@ const typeLabel: Record<ItemType, string> = {
 };
 
 const typeIcon: Record<ItemType, string> = {
-  note: "✎",
-  link: "↗",
-  media: "◉",
-  file: "□",
+  note: "âœŽ",
+  link: "â†—",
+  media: "â—‰",
+  file: "â–¡",
 };
 
 const BUCKET = "vault files";
@@ -176,8 +178,8 @@ function TrashBin({
   if (loadingTrash) {
     return (
       <div className="empty">
-        <div>◌</div>
-        <h3>Loading Recycle Bin…</h3>
+        <div>â—Œ</div>
+        <h3>Loading Recycle Binâ€¦</h3>
         <p>Checking deleted items.</p>
       </div>
     );
@@ -186,7 +188,7 @@ function TrashBin({
   if (!deleted.length) {
     return (
       <div className="empty">
-        <div>♻</div>
+        <div>â™»</div>
         <h3>Recycle Bin is empty</h3>
         <p>Deleted items can be restored for 30 days.</p>
       </div>
@@ -220,7 +222,7 @@ function TrashBin({
                   title="Restore"
                   onClick={() => restore(x.id)}
                 >
-                  ↶
+                  â†¶
                 </button>
 
                 <button
@@ -228,7 +230,7 @@ function TrashBin({
                   className="danger-action"
                   onClick={() => purge(x.id)}
                 >
-                  ⌫
+                  âŒ«
                 </button>
               </div>
             </div>
@@ -411,7 +413,7 @@ export default function Page() {
   }, []);
 
   async function processSharedFile(file: File) {
-    await handleSelectedFile(file);
+    return await handleSelectedFile(file);
   }
 
   async function processIncomingShare() {
@@ -422,9 +424,14 @@ export default function Page() {
     try {
       const params = new URLSearchParams(window.location.search);
 
-      const sharedUrlParam = params.get("shared_url")?.trim() ?? "";
-      const sharedText = params.get("shared_text")?.trim() ?? "";
-      const sharedTitle = params.get("shared_title")?.trim() ?? "";
+      const sharedUrlParam =
+        params.get("shared_url")?.trim() ?? "";
+
+      const sharedText =
+        params.get("shared_text")?.trim() ?? "";
+
+      const sharedTitle =
+        params.get("shared_title")?.trim() ?? "";
 
       const extractedUrl =
         sharedUrlParam || extractUrlFromText(sharedText);
@@ -435,15 +442,17 @@ export default function Page() {
           : sharedText;
 
       if (extractedUrl || sharedText || sharedTitle) {
-        const title =
-          sharedTitle ||
-          (extractedUrl ? "Shared link" : "Shared text");
-
         setForm({
-          title,
+          title:
+            sharedTitle ||
+            (extractedUrl
+              ? "Shared link"
+              : "Shared text"),
           tags: "Shared",
           url: extractedUrl,
-          content: cleanText || extractedUrl,
+          content:
+            cleanText ||
+            extractedUrl,
         });
 
         setEditingId(null);
@@ -466,79 +475,126 @@ export default function Page() {
         return;
       }
 
-      const request = indexedDB.open("myvault-share", 1);
+      const db = await new Promise<IDBDatabase>(
+        (resolve, reject) => {
+          const request = indexedDB.open(
+            "myvault-share",
+            1
+          );
 
-      request.onerror = () => {
-        console.error(
-          "My VaulT could not open the share inbox."
-        );
-      };
+          request.onsuccess = () => {
+            resolve(request.result);
+          };
 
-      request.onsuccess = () => {
-        const db = request.result;
-
-        if (!db.objectStoreNames.contains("inbox")) {
-          db.close();
-          return;
-        }
-
-        const tx = db.transaction("inbox", "readonly");
-        const get = tx.objectStore("inbox").get("latest");
-
-        get.onerror = () => {
-          db.close();
-        };
-
-        get.onsuccess = async () => {
-          const value = get.result;
-
-          if (!value?.buffer) {
-            db.close();
-            return;
-          }
-
-          try {
-            const file = new File(
-              [value.buffer],
-              value.name || "shared-file",
-              {
-                type:
-                  value.type ||
-                  "application/octet-stream",
-                lastModified:
-                  value.lastModified || Date.now(),
-              }
+          request.onerror = () => {
+            reject(
+              request.error ||
+                new Error(
+                  "Could not open share inbox"
+                )
             );
+          };
+        }
+      );
 
-            await processSharedFile(file);
+      if (!db.objectStoreNames.contains("inbox")) {
+        db.close();
+        return;
+      }
 
-            const del = db.transaction(
+      const value = await new Promise<any>(
+        (resolve, reject) => {
+          const tx = db.transaction(
+            "inbox",
+            "readonly"
+          );
+
+          const get = tx
+            .objectStore("inbox")
+            .get("latest");
+
+          get.onsuccess = () => {
+            resolve(get.result);
+          };
+
+          get.onerror = () => {
+            reject(
+              get.error ||
+                new Error(
+                  "Could not read shared file"
+                )
+            );
+          };
+        }
+      );
+
+      if (!value?.buffer) {
+        db.close();
+        return;
+      }
+
+      const file = new File(
+        [value.buffer],
+        value.name || "shared-file",
+        {
+          type:
+            value.type ||
+            "application/octet-stream",
+          lastModified:
+            value.lastModified || Date.now(),
+        }
+      );
+
+      const saved =
+        await processSharedFile(file);
+
+      if (saved) {
+        await new Promise<void>(
+          (resolve, reject) => {
+            const tx = db.transaction(
               "inbox",
               "readwrite"
             );
 
-            del.objectStore("inbox").delete("latest");
-
-            del.oncomplete = () => {
-              db.close();
-            };
-
-            del.onerror = () => {
-              db.close();
-            };
-          } catch (error) {
-            console.error(
-              "My VaulT could not process shared file:",
-              error
+            tx.objectStore("inbox").delete(
+              "latest"
             );
 
-            db.close();
-            notify(
-              "The shared file could not be saved."
-            );
+            tx.oncomplete = () => {
+              resolve();
+            };
+
+            tx.onerror = () => {
+              reject(
+                tx.error ||
+                  new Error(
+                    "Could not clear share inbox"
+                  )
+              );
+            };
+
+            tx.onabort = () => {
+              reject(
+                tx.error ||
+                  new Error(
+                    "Share inbox transaction aborted"
+                  )
+              );
+            };
           }
-        };
-      };
+        );
+      }
+
+      db.close();
+    } catch (error) {
+      console.error(
+        "My VaulT could not process incoming share:",
+        error
+      );
+
+      notify(
+        "The shared file could not be saved."
+      );
     } finally {
       shareProcessing.current = false;
     }
@@ -765,7 +821,7 @@ export default function Page() {
   async function createItem(
     type: ItemType,
     selectedFile?: File
-  ) {
+  ): Promise<boolean> {
     const {
       data: sessionData,
     } = await supabase.auth.getSession();
@@ -775,7 +831,7 @@ export default function Page() {
     if (!user) {
       setAuthRequired(true);
       notify("Please sign in first");
-      return;
+      return false;
     }
 
     setSaving(true);
@@ -822,7 +878,7 @@ export default function Page() {
           `Upload failed: ${uploadError.message}`
         );
 
-        return;
+        return false;
       }
     }
 
@@ -873,7 +929,7 @@ export default function Page() {
         `Could not save: ${error.message}`
       );
 
-      return;
+      return false;
     }
 
     const item = (
@@ -895,7 +951,7 @@ export default function Page() {
         `${selectedFile.name} uploaded successfully`
       );
 
-      return;
+      return true;
     }
 
     setEditingId(item.id);
@@ -908,10 +964,12 @@ export default function Page() {
     });
 
     setModal("editor");
+
+    return true;
   }
 
   async function handleSelectedFile(file: File) {
-    await createItem("file", file);
+    return await createItem("file", file);
   }
 
   async function saveEdit(
@@ -1292,7 +1350,7 @@ export default function Page() {
     setActiveCollection(clean);
 
     notify(
-      `Collection "${clean}" created — you can drag cards here or use Move…`
+      `Collection "${clean}" created â€” you can drag cards here or use Moveâ€¦`
     );
   }
 
@@ -1352,10 +1410,10 @@ export default function Page() {
 
         if (
           !window.confirm(
-            `Open “${
+            `Open â€œ${
               item.fileName ??
               item.title
-            }” in a new tab?`
+            }â€ in a new tab?`
           )
         ) {
           return;
@@ -1375,7 +1433,7 @@ export default function Page() {
   }
 
   const title = search
-    ? `Results for “${search}”`
+    ? `Results for â€œ${search}â€`
     : (
         {
           all: "Everything worth keeping.",
@@ -1403,20 +1461,20 @@ export default function Page() {
 
   const contextualCaptureLabel =
     view === "notes"
-      ? "＋ Add note"
+      ? "ï¼‹ Add note"
       : view === "links"
-      ? "＋ Add URL"
+      ? "ï¼‹ Add URL"
       : view === "media"
-      ? "＋ Add media"
+      ? "ï¼‹ Add media"
       : view === "files"
-      ? "＋ Upload file"
+      ? "ï¼‹ Upload file"
       : view === "favorites"
-      ? "＋ Capture favorite"
+      ? "ï¼‹ Capture favorite"
       : view === "trash"
       ? "Recycle Bin"
       : activeCollection
-      ? `＋ Add to ${activeCollection}`
-      : "＋ Capture";
+      ? `ï¼‹ Add to ${activeCollection}`
+      : "ï¼‹ Capture";
 
   if (authRequired) {
     return (
@@ -1502,7 +1560,7 @@ export default function Page() {
               disabled={authBusy}
             >
               {authBusy
-                ? "Signing in…"
+                ? "Signing inâ€¦"
                 : "Sign in"}
             </button>
           </form>
@@ -1556,13 +1614,13 @@ export default function Page() {
           {[
             [
               "all",
-              "⌂",
+              "âŒ‚",
               "All items",
               items.length,
             ],
             [
               "notes",
-              "▤",
+              "â–¤",
               "Notes",
               items.filter(
                 (x) => x.type === "note"
@@ -1570,7 +1628,7 @@ export default function Page() {
             ],
             [
               "links",
-              "↗",
+              "â†—",
               "Links",
               items.filter(
                 (x) => x.type === "link"
@@ -1578,7 +1636,7 @@ export default function Page() {
             ],
             [
               "media",
-              "◉",
+              "â—‰",
               "Media",
               items.filter(
                 (x) => x.type === "media"
@@ -1586,7 +1644,7 @@ export default function Page() {
             ],
             [
               "files",
-              "□",
+              "â–¡",
               "Files",
               items.filter(
                 (x) => x.type === "file"
@@ -1594,7 +1652,7 @@ export default function Page() {
             ],
             [
               "favorites",
-              "★",
+              "â˜…",
               "Favorites",
               items.filter(
                 (x) => x.favorite
@@ -1602,7 +1660,7 @@ export default function Page() {
             ],
             [
               "trash",
-              "♻",
+              "â™»",
               "Recycle Bin",
               "",
             ],
@@ -1681,7 +1739,7 @@ export default function Page() {
             className="new-collection"
             onClick={createCollection}
           >
-            ＋ New collection
+            ï¼‹ New collection
           </button>
         </div>
 
@@ -1696,7 +1754,7 @@ export default function Page() {
               )
             }
           >
-            <span>◐</span>
+            <span>â—</span>
             Appearance
             <small>
               {theme === "dark"
@@ -1711,7 +1769,7 @@ export default function Page() {
               setModal("settings")
             }
           >
-            <span>⚙</span>
+            <span>âš™</span>
             Settings
           </button>
 
@@ -1733,7 +1791,7 @@ export default function Page() {
               </small>
             </div>
 
-            <span>•••</span>
+            <span>â€¢â€¢â€¢</span>
           </button>
         </div>
       </aside>
@@ -1747,7 +1805,7 @@ export default function Page() {
             }
             aria-label="Open navigation"
           >
-            ☰
+            â˜°
           </button>
 
           <button
@@ -1786,7 +1844,7 @@ export default function Page() {
                   ?.focus()
               }
             >
-              ⌕
+              âŒ•
             </button>
 
             <button
@@ -1795,7 +1853,7 @@ export default function Page() {
                 setModal("settings")
               }
             >
-              ⚙
+              âš™
             </button>
 
             <button
@@ -1858,7 +1916,7 @@ export default function Page() {
 
           <div className="toolbar">
             <div className="search-wrap">
-              <span>⌕</span>
+              <span>âŒ•</span>
 
               <input
                 id="vault-search"
@@ -1872,7 +1930,7 @@ export default function Page() {
                 autoComplete="off"
               />
 
-              <kbd>⌘ K</kbd>
+              <kbd>âŒ˜ K</kbd>
             </div>
 
             <div className="toolbar-actions">
@@ -1893,7 +1951,7 @@ export default function Page() {
                   }
                 >
                   {x === "favorites"
-                    ? "★"
+                    ? "â˜…"
                     : x[0].toUpperCase() +
                       x.slice(1)}
                 </button>
@@ -1909,7 +1967,7 @@ export default function Page() {
                   setLayout("grid")
                 }
               >
-                ▦
+                â–¦
               </button>
 
               <button
@@ -1922,7 +1980,7 @@ export default function Page() {
                   setLayout("list")
                 }
               >
-                ☷
+                â˜·
               </button>
             </div>
           </div>
@@ -1956,7 +2014,7 @@ export default function Page() {
           <div className="result-meta">
             <span>
               {activeCollection
-                ? `Collection: ${activeCollection} · `
+                ? `Collection: ${activeCollection} Â· `
                 : ""}
               {filtered.length}{" "}
               {filtered.length === 1
@@ -1975,9 +2033,9 @@ export default function Page() {
 
           {loading ? (
             <div className="empty">
-              <div>◌</div>
+              <div>â—Œ</div>
               <h3>
-                Loading your vault…
+                Loading your vaultâ€¦
               </h3>
               <p>
                 Fetching your saved items
@@ -2007,7 +2065,7 @@ export default function Page() {
             />
           ) : filtered.length === 0 ? (
             <div className="empty">
-              <div>⌕</div>
+              <div>âŒ•</div>
 
               <h3>
                 {search
@@ -2093,8 +2151,8 @@ export default function Page() {
                       }
                     >
                       {x.favorite
-                        ? "★"
-                        : "☆"}
+                        ? "â˜…"
+                        : "â˜†"}
                     </button>
                   </div>
 
@@ -2105,7 +2163,7 @@ export default function Page() {
                       {x.fileName
                         ? `${x.fileName}${
                             x.file_size
-                              ? ` · ${formatBytes(
+                              ? ` Â· ${formatBytes(
                                   x.file_size
                                 )}`
                               : ""
@@ -2134,7 +2192,7 @@ export default function Page() {
                             openEditor(x)
                           }
                         >
-                          ✎
+                          âœŽ
                         </button>
 
                         <button
@@ -2143,7 +2201,7 @@ export default function Page() {
                             openItem(x)
                           }
                         >
-                          ↗
+                          â†—
                         </button>
 
                         {collections.length >
@@ -2168,7 +2226,7 @@ export default function Page() {
                             title="Move to collection"
                           >
                             <option value="">
-                              Move…
+                              Moveâ€¦
                             </option>
 
                             {collections.map(
@@ -2193,7 +2251,7 @@ export default function Page() {
                             )
                           }
                         >
-                          ⌫
+                          âŒ«
                         </button>
                       </div>
                     </div>
@@ -2216,7 +2274,7 @@ export default function Page() {
             setViewAndReset("all")
           }
         >
-          <span>⌂</span>
+          <span>âŒ‚</span>
           <small>Home</small>
         </button>
 
@@ -2230,7 +2288,7 @@ export default function Page() {
             setViewAndReset("notes")
           }
         >
-          <span>▤</span>
+          <span>â–¤</span>
           <small>Notes</small>
         </button>
 
@@ -2255,7 +2313,7 @@ export default function Page() {
             )
           }
         >
-          <span>★</span>
+          <span>â˜…</span>
           <small>Saved</small>
         </button>
 
@@ -2265,7 +2323,7 @@ export default function Page() {
             setMobileMenuOpen(true)
           }
         >
-          <span>☰</span>
+          <span>â˜°</span>
           <small>Menu</small>
         </button>
       </nav>
@@ -2301,7 +2359,7 @@ export default function Page() {
                   setMobileMenuOpen(false)
                 }
               >
-                ×
+                Ã—
               </button>
             </div>
 
@@ -2312,7 +2370,7 @@ export default function Page() {
                 setModal("capture");
               }}
             >
-              ＋ Capture
+              ï¼‹ Capture
             </button>
 
             <div className="drawer-section-label">
@@ -2323,13 +2381,13 @@ export default function Page() {
               {[
                 [
                   "all",
-                  "⌂",
+                  "âŒ‚",
                   "All items",
                   items.length,
                 ],
                 [
                   "notes",
-                  "▤",
+                  "â–¤",
                   "Notes",
                   items.filter(
                     (x) =>
@@ -2338,7 +2396,7 @@ export default function Page() {
                 ],
                 [
                   "links",
-                  "↗",
+                  "â†—",
                   "Links",
                   items.filter(
                     (x) =>
@@ -2347,7 +2405,7 @@ export default function Page() {
                 ],
                 [
                   "media",
-                  "◉",
+                  "â—‰",
                   "Media",
                   items.filter(
                     (x) =>
@@ -2356,7 +2414,7 @@ export default function Page() {
                 ],
                 [
                   "files",
-                  "□",
+                  "â–¡",
                   "Files",
                   items.filter(
                     (x) =>
@@ -2365,7 +2423,7 @@ export default function Page() {
                 ],
                 [
                   "favorites",
-                  "★",
+                  "â˜…",
                   "Favorites",
                   items.filter(
                     (x) => x.favorite
@@ -2373,7 +2431,7 @@ export default function Page() {
                 ],
                 [
                   "trash",
-                  "♻",
+                  "â™»",
                   "Recycle Bin",
                   "",
                 ],
@@ -2444,7 +2502,7 @@ export default function Page() {
                   void createCollection();
                 }}
               >
-                ＋ New collection
+                ï¼‹ New collection
               </button>
             </div>
 
@@ -2455,7 +2513,7 @@ export default function Page() {
                   setModal("settings");
                 }}
               >
-                ⚙ Settings
+                âš™ Settings
               </button>
 
               <button
@@ -2464,7 +2522,7 @@ export default function Page() {
                   setModal("account");
                 }}
               >
-                ◉ Account
+                â—‰ Account
               </button>
 
               <button
@@ -2476,7 +2534,7 @@ export default function Page() {
                   )
                 }
               >
-                ◐ Appearance{" "}
+                â— Appearance{" "}
                 <span>
                   {theme === "dark"
                     ? "Dark"
@@ -2504,7 +2562,7 @@ export default function Page() {
                 setModal(null)
               }
             >
-              ×
+              Ã—
             </button>
 
             <div className="modal-head">
@@ -2528,25 +2586,25 @@ export default function Page() {
               {([
                 [
                   "note",
-                  "✎",
+                  "âœŽ",
                   "Quick note",
                   "Write an idea or reminder",
                 ],
                 [
                   "link",
-                  "↗",
+                  "â†—",
                   "Save link",
                   "URL, reel, post or article",
                 ],
                 [
                   "media",
-                  "◉",
+                  "â—‰",
                   "Photo / video",
                   "Camera or media from device",
                 ],
                 [
                   "file",
-                  "□",
+                  "â–¡",
                   "Upload file",
                   "PDF, document or any file",
                 ],
@@ -2586,7 +2644,7 @@ export default function Page() {
 
             <div className="capture-inputs">
               <label>
-                📷 Take photo
+                ðŸ“· Take photo
                 <input
                   type="file"
                   accept="image/*"
@@ -2608,7 +2666,7 @@ export default function Page() {
               </label>
 
               <label>
-                🎥 Take video
+                ðŸŽ¥ Take video
                 <input
                   type="file"
                   accept="video/*"
@@ -2630,7 +2688,7 @@ export default function Page() {
               </label>
 
               <label>
-                📁 Choose any file
+                ðŸ“ Choose any file
                 <input
                   id="vault-file-input"
                   type="file"
@@ -2672,7 +2730,7 @@ export default function Page() {
                   setModal(null)
                 }
               >
-                ×
+                Ã—
               </button>
 
               <div className="modal-head">
@@ -2790,7 +2848,7 @@ export default function Page() {
                     disabled={saving}
                   >
                     {saving
-                      ? "Saving…"
+                      ? "Savingâ€¦"
                       : "Save changes"}
                   </button>
                 </div>
@@ -2816,14 +2874,14 @@ export default function Page() {
                   setModal(null)
                 }
               >
-                ×
+                Ã—
               </button>
 
               <div className="modal-head">
                 <span className="modal-icon">
                   {form.url
-                    ? "↗"
-                    : "✎"}
+                    ? "â†—"
+                    : "âœŽ"}
                 </span>
 
                 <div>
@@ -2925,7 +2983,7 @@ export default function Page() {
                     disabled={saving}
                   >
                     {saving
-                      ? "Saving…"
+                      ? "Savingâ€¦"
                       : "Save to My VaulT"}
                   </button>
                 </div>
@@ -2951,12 +3009,12 @@ export default function Page() {
                   setModal(null)
                 }
               >
-                ×
+                Ã—
               </button>
 
               <div className="modal-head">
                 <span className="modal-icon">
-                  ◉
+                  â—‰
                 </span>
 
                 <div>
@@ -3057,12 +3115,12 @@ export default function Page() {
                 setModal(null)
               }
             >
-              ×
+              Ã—
             </button>
 
             <div className="modal-head">
               <span className="modal-icon">
-                ⚙
+                âš™
               </span>
 
               <div>
@@ -3085,7 +3143,7 @@ export default function Page() {
                   )
                 }
               >
-                <span>◐</span>
+                <span>â—</span>
 
                 <div>
                   <b>Appearance</b>
@@ -3106,7 +3164,7 @@ export default function Page() {
                   window.location.reload()
                 }
               >
-                <span>↻</span>
+                <span>â†»</span>
 
                 <div>
                   <b>
@@ -3144,7 +3202,7 @@ export default function Page() {
                 setModal(null)
               }
             >
-              ×
+              Ã—
             </button>
 
             <div className="modal-head">
@@ -3168,7 +3226,7 @@ export default function Page() {
                   window.location.reload();
                 }}
               >
-                <span>↪</span>
+                <span>â†ª</span>
 
                 <div>
                   <b>Sign out</b>
