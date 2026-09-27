@@ -25,8 +25,9 @@ async function saveSharedFile(file) {
 
   await new Promise((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
+    const store = tx.objectStore(STORE);
 
-    tx.objectStore(STORE).put(
+    store.put(
       {
         buffer,
         name: file.name || "shared-file",
@@ -38,13 +39,14 @@ async function saveSharedFile(file) {
 
     tx.oncomplete = resolve;
     tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"));
+    tx.onabort = () =>
+      reject(tx.error || new Error("IndexedDB transaction aborted"));
   });
 
   db.close();
 }
 
-self.addEventListener("install", () => {
+self.addEventListener("install", (event) => {
   self.skipWaiting();
 });
 
@@ -56,7 +58,7 @@ self.addEventListener("fetch", (event) => {
   const request = event.request;
   const url = new URL(request.url);
 
-  // Only intercept Android/Web Share Target POST requests.
+  // Only handle Android/Web Share Target POST requests.
   if (request.method !== "POST" || url.pathname !== "/share-target") {
     return;
   }
@@ -64,21 +66,54 @@ self.addEventListener("fetch", (event) => {
   event.respondWith(
     (async () => {
       try {
-        // Read the multipart form only once.
         const form = await request.formData();
 
-        const title = String(form.get("title") || "");
-        const text = String(form.get("text") || "");
-        const sharedUrl = String(form.get("url") || "");
+        const titleValue = form.get("title");
+        const textValue = form.get("text");
+        const urlValue = form.get("url");
 
-        // Android may send one or more files.
-        const files = form
+        const title =
+          typeof titleValue === "string" ? titleValue : "";
+
+        const text =
+          typeof textValue === "string" ? textValue : "";
+
+        const sharedUrl =
+          typeof urlValue === "string" ? urlValue : "";
+
+        /*
+         * Android can provide shared files in slightly different
+         * multipart representations. Check every value in the
+         * form instead of relying only on getAll("files").
+         */
+        const files = [];
+
+        for (const [key, value] of form.entries()) {
+          if (value instanceof File && value.size > 0) {
+            files.push(value);
+          }
+        }
+
+        /*
+         * Prefer the file supplied through the manifest's "files"
+         * field, but fall back to any File found in the form.
+         */
+        let sharedFile = null;
+
+        const declaredFiles = form
           .getAll("files")
-          .filter((value) => value instanceof File);
+          .filter(
+            (value) => value instanceof File && value.size > 0
+          );
 
-        // Save the first shared file into IndexedDB.
-        if (files.length > 0) {
-          await saveSharedFile(files[0]);
+        if (declaredFiles.length > 0) {
+          sharedFile = declaredFiles[0];
+        } else if (files.length > 0) {
+          sharedFile = files[0];
+        }
+
+        if (sharedFile) {
+          await saveSharedFile(sharedFile);
         }
 
         const params = new URLSearchParams();
@@ -95,16 +130,21 @@ self.addEventListener("fetch", (event) => {
           params.set("shared_url", sharedUrl);
         }
 
+        /*
+         * Always redirect back to the main My VaulT page.
+         */
         const redirectUrl = new URL("/", url.origin);
 
         if (params.toString()) {
           redirectUrl.search = params.toString();
         }
 
-        // 303 converts the POST into a normal GET.
         return Response.redirect(redirectUrl.href, 303);
       } catch (error) {
-        console.error("My VaulT share target error:", error);
+        console.error(
+          "My VaulT share target error:",
+          error
+        );
 
         return Response.redirect(
           new URL("/", url.origin).href,
