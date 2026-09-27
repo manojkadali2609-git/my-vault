@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
 type ItemType = "note" | "link" | "media" | "file";
+
 type Item = {
   id: string;
   user_id?: string;
@@ -25,70 +26,234 @@ type Item = {
   deleted_at?: string | null;
 };
 
-const typeLabel: Record<ItemType, string> = { note: "Note", link: "Link", media: "Media", file: "File" };
-const typeIcon: Record<ItemType, string> = { note: "✎", link: "↗", media: "◉", file: "□" };
+const typeLabel: Record<ItemType, string> = {
+  note: "Note",
+  link: "Link",
+  media: "Media",
+  file: "File",
+};
+
+const typeIcon: Record<ItemType, string> = {
+  note: "✎",
+  link: "↗",
+  media: "◉",
+  file: "□",
+};
+
 const BUCKET = "vault files";
 
 const supabase = createClient();
 
 function formatBytes(bytes?: number | null) {
   if (!bytes) return "";
+
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)} KB`;
+  }
+
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function dbToItem(row: any): Item {
   return {
-    id: String(row.id), user_id: row.user_id, type: row.type, title: row.title ?? "Untitled",
-    content: row.content ?? "", url: row.url ?? null, fileName: row.file_name ?? row.fileName ?? null,
-    file_path: row.file_path ?? null, mime_type: row.mime_type ?? null, file_size: row.file_size ?? null,
-    tags: Array.isArray(row.tags) ? row.tags : [], favorite: Boolean(row.favorite),
-    collection: row.collection ?? null, created_at: row.created_at, updated_at: row.updated_at, deleted_at: row.deleted_at ?? null,
-    date: row.created_at ? new Date(row.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : "Today",
+    id: String(row.id),
+    user_id: row.user_id,
+    type: row.type,
+    title: row.title ?? "Untitled",
+    content: row.content ?? "",
+    url: row.url ?? null,
+    fileName: row.file_name ?? row.fileName ?? null,
+    file_path: row.file_path ?? null,
+    mime_type: row.mime_type ?? null,
+    file_size: row.file_size ?? null,
+    tags: Array.isArray(row.tags) ? row.tags : [],
+    favorite: Boolean(row.favorite),
+    collection: row.collection ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    deleted_at: row.deleted_at ?? null,
+    date: row.created_at
+      ? new Date(row.created_at).toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+        })
+      : "Today",
   };
 }
 
-function TrashBin({ notify, onRestored }: { notify: (m: string) => void; onRestored: (item: Item) => void }) {
+function extractUrlFromText(text: string) {
+  if (!text) return "";
+
+  const match = text.match(
+    /https?:\/\/[^\s<>"'`]+/i
+  );
+
+  if (!match) return "";
+
+  return match[0].replace(/[),.;!?]+$/, "");
+}
+
+function TrashBin({
+  notify,
+  onRestored,
+}: {
+  notify: (m: string) => void;
+  onRestored: (item: Item) => void;
+}) {
   const [deleted, setDeleted] = useState<Item[]>([]);
   const [loadingTrash, setLoadingTrash] = useState(true);
+
   useEffect(() => {
     (async () => {
-      const { data, error } = await supabase.from("items").select("*").not("deleted_at", "is", null).order("deleted_at", { ascending: false });
-      if (error) notify(`Could not load Recycle Bin: ${error.message}`); else setDeleted((data ?? []).map(dbToItem));
+      const { data, error } = await supabase
+        .from("items")
+        .select("*")
+        .not("deleted_at", "is", null)
+        .order("deleted_at", { ascending: false });
+
+      if (error) {
+        notify(`Could not load Recycle Bin: ${error.message}`);
+      } else {
+        setDeleted((data ?? []).map(dbToItem));
+      }
+
       setLoadingTrash(false);
     })();
   }, []);
-  async function restore(id:string) {
-    const { data, error } = await supabase.from("items").update({ deleted_at:null, updated_at:new Date().toISOString() }).eq("id",id).select("*").single();
-    if(error){notify(`Could not restore: ${error.message}`);return;}
+
+  async function restore(id: string) {
+    const { data, error } = await supabase
+      .from("items")
+      .update({
+        deleted_at: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (error) {
+      notify(`Could not restore: ${error.message}`);
+      return;
+    }
+
     const restored = dbToItem(data);
-    setDeleted(d=>d.filter(x=>x.id!==id));
+
+    setDeleted((d) => d.filter((x) => x.id !== id));
     onRestored(restored);
     notify("Item restored");
   }
-  async function purge(id:string) {
-    if(!window.confirm("Permanently delete this item? This cannot be undone.")) return;
-    const { error } = await supabase.from("items").delete().eq("id",id);
-    if(error){notify(`Could not permanently delete: ${error.message}`);return;} setDeleted(d=>d.filter(x=>x.id!==id)); notify("Permanently deleted");
+
+  async function purge(id: string) {
+    if (
+      !window.confirm(
+        "Permanently delete this item? This cannot be undone."
+      )
+    ) {
+      return;
+    }
+
+    const { error } = await supabase
+      .from("items")
+      .delete()
+      .eq("id", id);
+
+    if (error) {
+      notify(`Could not permanently delete: ${error.message}`);
+      return;
+    }
+
+    setDeleted((d) => d.filter((x) => x.id !== id));
+    notify("Permanently deleted");
   }
-  if(loadingTrash) return <div className="empty"><div>◌</div><h3>Loading Recycle Bin…</h3><p>Checking deleted items.</p></div>;
-  if(!deleted.length) return <div className="empty"><div>♻</div><h3>Recycle Bin is empty</h3><p>Deleted items can be restored for 30 days.</p></div>;
-  return <div className="cards">{deleted.map(x=><article className="card" key={x.id}><div className="card-top"><span className="type-badge">{typeIcon[x.type]} {typeLabel[x.type]}</span></div><div className="card-body"><h3>{x.title}</h3><p>{x.content}</p><div className="card-foot"><span>Deleted {x.deleted_at?new Date(x.deleted_at).toLocaleDateString():""}</span><div className="card-actions"><button title="Restore" onClick={()=>restore(x.id)}>↶</button><button title="Permanently delete" className="danger-action" onClick={()=>purge(x.id)}>⌫</button></div></div></div></article>)}</div>;
+
+  if (loadingTrash) {
+    return (
+      <div className="empty">
+        <div>◌</div>
+        <h3>Loading Recycle Bin…</h3>
+        <p>Checking deleted items.</p>
+      </div>
+    );
+  }
+
+  if (!deleted.length) {
+    return (
+      <div className="empty">
+        <div>♻</div>
+        <h3>Recycle Bin is empty</h3>
+        <p>Deleted items can be restored for 30 days.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="cards">
+      {deleted.map((x) => (
+        <article className="card" key={x.id}>
+          <div className="card-top">
+            <span className="type-badge">
+              {typeIcon[x.type]} {typeLabel[x.type]}
+            </span>
+          </div>
+
+          <div className="card-body">
+            <h3>{x.title}</h3>
+            <p>{x.content}</p>
+
+            <div className="card-foot">
+              <span>
+                Deleted{" "}
+                {x.deleted_at
+                  ? new Date(x.deleted_at).toLocaleDateString()
+                  : ""}
+              </span>
+
+              <div className="card-actions">
+                <button
+                  title="Restore"
+                  onClick={() => restore(x.id)}
+                >
+                  ↶
+                </button>
+
+                <button
+                  title="Permanently delete"
+                  className="danger-action"
+                  onClick={() => purge(x.id)}
+                >
+                  ⌫
+                </button>
+              </div>
+            </div>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
 }
 
 export default function Page() {
   const [items, setItems] = useState<Item[]>([]);
   const [collections, setCollections] = useState<string[]>([]);
-  const [activeCollection, setActiveCollection] = useState<string | null>(null);
+  const [activeCollection, setActiveCollection] = useState<string | null>(
+    null
+  );
   const [view, setView] = useState("all");
   const [filter, setFilter] = useState("all");
   const [tag, setTag] = useState("all");
   const [search, setSearch] = useState("");
   const [layout, setLayout] = useState<"grid" | "list">("grid");
   const [theme, setTheme] = useState<"dark" | "light">("light");
-  const [modal, setModal] = useState<"capture" | "editor" | "viewer" | "settings" | "account" | null>(null);
+  const [modal, setModal] = useState<
+    "capture" | "editor" | "viewer" | "settings" | "account" | null
+  >(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [viewerItem, setViewerItem] = useState<Item | null>(null);
   const [toast, setToast] = useState("");
@@ -103,16 +268,30 @@ export default function Page() {
   const [authError, setAuthError] = useState("");
   const [themeReady, setThemeReady] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", tags: "", url: "", content: "" });
+  const [form, setForm] = useState({
+    title: "",
+    tags: "",
+    url: "",
+    content: "",
+  });
+
+  const shareProcessing = useRef(false);
 
   useEffect(() => {
     let active = true;
+
     async function load() {
       setLoading(true);
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+
+      const {
+        data: sessionData,
+        error: sessionError,
+      } = await supabase.auth.getSession();
+
       if (!active) return;
 
       const user = sessionData.session?.user ?? null;
+
       if (sessionError) {
         setAuthError(sessionError.message);
         setAuthRequired(true);
@@ -134,97 +313,268 @@ export default function Page() {
       setUserId(user.id);
       setUserEmail(user.email ?? "");
 
-      const [{ data, error }, { data: collectionRows, error: collectionError }] = await Promise.all([
-        supabase.from("items").select("*").is("deleted_at", null).order("created_at", { ascending: false }),
-        supabase.from("collections").select("name").eq("user_id", user.id).order("created_at", { ascending: true }),
+      const [
+        { data, error },
+        { data: collectionRows, error: collectionError },
+      ] = await Promise.all([
+        supabase
+          .from("items")
+          .select("*")
+          .is("deleted_at", null)
+          .order("created_at", { ascending: false }),
+
+        supabase
+          .from("collections")
+          .select("name")
+          .eq("user_id", user.id)
+          .order("created_at", { ascending: true }),
       ]);
 
       if (!active) return;
-      if (error) notify(`Could not load vault: ${error.message}`);
-      else setItems(await addSignedUrls((data ?? []).map(dbToItem)));
-      if (!collectionError && collectionRows) {
-        setCollections(collectionRows.map((row: { name: string }) => row.name));
+
+      if (error) {
+        notify(`Could not load vault: ${error.message}`);
       } else {
-        const savedCollections = window.localStorage.getItem("myvault-collections");
+        setItems(await addSignedUrls((data ?? []).map(dbToItem)));
+      }
+
+      if (!collectionError && collectionRows) {
+        setCollections(
+          collectionRows.map((row: { name: string }) => row.name)
+        );
+      } else {
+        const savedCollections =
+          window.localStorage.getItem("myvault-collections");
+
         if (savedCollections) {
-          try { setCollections(JSON.parse(savedCollections)); } catch {}
+          try {
+            setCollections(JSON.parse(savedCollections));
+          } catch {}
         }
       }
 
-      const savedTheme = window.localStorage.getItem("myvault-theme") as "dark" | "light" | null;
-      if (savedTheme === "dark" || savedTheme === "light") setTheme(savedTheme);
+      const savedTheme =
+        window.localStorage.getItem("myvault-theme") as
+          | "dark"
+          | "light"
+          | null;
+
+      if (savedTheme === "dark" || savedTheme === "light") {
+        setTheme(savedTheme);
+      }
+
       setLoading(false);
     }
+
     load();
-    return () => { active = false; };
+
+    return () => {
+      active = false;
+    };
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("myvault-collections", JSON.stringify(collections));
+    window.localStorage.setItem(
+      "myvault-collections",
+      JSON.stringify(collections)
+    );
   }, [collections]);
 
   useEffect(() => {
-    const savedTheme = window.localStorage.getItem("myvault-theme") as "dark" | "light" | null;
-    if (savedTheme === "dark" || savedTheme === "light") setTheme(savedTheme);
+    const savedTheme =
+      window.localStorage.getItem("myvault-theme") as
+        | "dark"
+        | "light"
+        | null;
+
+    if (savedTheme === "dark" || savedTheme === "light") {
+      setTheme(savedTheme);
+    }
+
     setThemeReady(true);
   }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    if (themeReady) window.localStorage.setItem("myvault-theme", theme);
+
+    if (themeReady) {
+      window.localStorage.setItem("myvault-theme", theme);
+    }
   }, [theme, themeReady]);
+
   useEffect(() => {
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker
+        .register("/sw.js")
+        .catch(() => {});
+    }
   }, []);
 
-  useEffect(() => {
-    if (!userId) return;
-    const params = new URLSearchParams(window.location.search);
-    const sharedUrl = params.get("shared_url");
-    const sharedText = params.get("shared_text");
-    const sharedTitle = params.get("shared_title");
-    if (sharedUrl || sharedText) {
-      const url = sharedUrl || "";
-      const title = sharedTitle || (url ? "Shared link" : "Shared text");
-      setForm({ title, tags: "Shared", url, content: sharedText || url });
-      setEditingId(null);
-      setModal("editor");
-      window.history.replaceState({}, "", window.location.pathname);
-    }
+  async function processSharedFile(file: File) {
+    await handleSelectedFile(file);
+  }
 
-    if (!("indexedDB" in window)) return;
-    const request = indexedDB.open("myvault-share", 1);
-    request.onsuccess = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains("inbox")) { db.close(); return; }
-      const tx = db.transaction("inbox", "readonly");
-      const get = tx.objectStore("inbox").get("latest");
-      get.onsuccess = () => {
-        const value = get.result;
-        if (!value?.buffer) { db.close(); return; }
-        const file = new File([value.buffer], value.name || "shared-file", { type: value.type || "application/octet-stream", lastModified: value.lastModified || Date.now() });
-        void handleSelectedFile(file);
-        const del = db.transaction("inbox", "readwrite");
-        del.objectStore("inbox").delete("latest");
-        del.oncomplete = () => db.close();
+  async function processIncomingShare() {
+    if (!userId || shareProcessing.current) return;
+
+    shareProcessing.current = true;
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+
+      const sharedUrlParam = params.get("shared_url")?.trim() ?? "";
+      const sharedText = params.get("shared_text")?.trim() ?? "";
+      const sharedTitle = params.get("shared_title")?.trim() ?? "";
+
+      const extractedUrl =
+        sharedUrlParam || extractUrlFromText(sharedText);
+
+      const cleanText =
+        sharedText && extractedUrl
+          ? sharedText.replace(extractedUrl, "").trim()
+          : sharedText;
+
+      if (extractedUrl || sharedText || sharedTitle) {
+        const title =
+          sharedTitle ||
+          (extractedUrl ? "Shared link" : "Shared text");
+
+        setForm({
+          title,
+          tags: "Shared",
+          url: extractedUrl,
+          content: cleanText || extractedUrl,
+        });
+
+        setEditingId(null);
+        setModal("editor");
+
+        window.history.replaceState(
+          {},
+          "",
+          window.location.pathname
+        );
+
+        notify(
+          extractedUrl
+            ? "Shared link detected"
+            : "Shared content detected"
+        );
+      }
+
+      if (!("indexedDB" in window)) {
+        return;
+      }
+
+      const request = indexedDB.open("myvault-share", 1);
+
+      request.onerror = () => {
+        console.error(
+          "My VaulT could not open the share inbox."
+        );
       };
-    };
+
+      request.onsuccess = () => {
+        const db = request.result;
+
+        if (!db.objectStoreNames.contains("inbox")) {
+          db.close();
+          return;
+        }
+
+        const tx = db.transaction("inbox", "readonly");
+        const get = tx.objectStore("inbox").get("latest");
+
+        get.onerror = () => {
+          db.close();
+        };
+
+        get.onsuccess = async () => {
+          const value = get.result;
+
+          if (!value?.buffer) {
+            db.close();
+            return;
+          }
+
+          try {
+            const file = new File(
+              [value.buffer],
+              value.name || "shared-file",
+              {
+                type:
+                  value.type ||
+                  "application/octet-stream",
+                lastModified:
+                  value.lastModified || Date.now(),
+              }
+            );
+
+            await processSharedFile(file);
+
+            const del = db.transaction(
+              "inbox",
+              "readwrite"
+            );
+
+            del.objectStore("inbox").delete("latest");
+
+            del.oncomplete = () => {
+              db.close();
+            };
+
+            del.onerror = () => {
+              db.close();
+            };
+          } catch (error) {
+            console.error(
+              "My VaulT could not process shared file:",
+              error
+            );
+
+            db.close();
+            notify(
+              "The shared file could not be saved."
+            );
+          }
+        };
+      };
+    } finally {
+      shareProcessing.current = false;
+    }
+  }
+
+  useEffect(() => {
+    void processIncomingShare();
   }, [userId]);
 
   async function signIn() {
     const email = authEmail.trim();
+
     if (!email || !authPassword) {
       setAuthError("Enter your email and password.");
       return;
     }
+
     setAuthBusy(true);
     setAuthError("");
-    const { data, error } = await supabase.auth.signInWithPassword({ email, password: authPassword });
+
+    const {
+      data,
+      error,
+    } = await supabase.auth.signInWithPassword({
+      email,
+      password: authPassword,
+    });
+
     if (error || !data.user) {
       setAuthBusy(false);
-      setAuthError(error?.message ?? "Could not sign in.");
+      setAuthError(
+        error?.message ?? "Could not sign in."
+      );
       return;
     }
+
     setUserId(data.user.id);
     setUserEmail(data.user.email ?? "");
     setAuthPassword("");
@@ -232,65 +582,202 @@ export default function Page() {
     setAuthBusy(false);
     setLoading(true);
 
-    const [{ data: itemRows, error: itemError }, { data: collectionRows, error: collectionError }] = await Promise.all([
-      supabase.from("items").select("*").is("deleted_at", null).order("created_at", { ascending: false }),
-      supabase.from("collections").select("name").eq("user_id", data.user.id).order("created_at", { ascending: true }),
+    const [
+      { data: itemRows, error: itemError },
+      { data: collectionRows, error: collectionError },
+    ] = await Promise.all([
+      supabase
+        .from("items")
+        .select("*")
+        .is("deleted_at", null)
+        .order("created_at", { ascending: false }),
+
+      supabase
+        .from("collections")
+        .select("name")
+        .eq("user_id", data.user.id)
+        .order("created_at", { ascending: true }),
     ]);
 
-    if (itemError) notify(`Could not load vault: ${itemError.message}`);
-    else setItems(await addSignedUrls((itemRows ?? []).map(dbToItem)));
-    if (!collectionError) setCollections((collectionRows ?? []).map((row: { name: string }) => row.name));
+    if (itemError) {
+      notify(`Could not load vault: ${itemError.message}`);
+    } else {
+      setItems(
+        await addSignedUrls(
+          (itemRows ?? []).map(dbToItem)
+        )
+      );
+    }
+
+    if (!collectionError) {
+      setCollections(
+        (collectionRows ?? []).map(
+          (row: { name: string }) => row.name
+        )
+      );
+    }
+
     setLoading(false);
   }
 
-  const viewToType: Record<string, ItemType | undefined> = { notes: "note", links: "link", media: "media", files: "file" };
+  const viewToType: Record<
+    string,
+    ItemType | undefined
+  > = {
+    notes: "note",
+    links: "link",
+    media: "media",
+    files: "file",
+  };
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
+
     let result = items.filter((x) => {
       const requestedType = viewToType[view];
-      const viewOK = view === "all" || (view === "favorites" ? x.favorite : requestedType ? x.type === requestedType : true);
-      const filterOK = filter === "all" || (filter === "favorites" ? x.favorite : true);
-      const tagOK = tag === "all" || x.tags.includes(tag);
-      const collectionOK = !activeCollection || x.collection === activeCollection;
-      const haystack = [x.title, x.content, x.url ?? "", x.type, x.fileName ?? "", ...x.tags].join(" ").toLowerCase();
-      return viewOK && filterOK && tagOK && collectionOK && (!q || haystack.includes(q));
+
+      const viewOK =
+        view === "all" ||
+        (view === "favorites"
+          ? x.favorite
+          : requestedType
+          ? x.type === requestedType
+          : true);
+
+      const filterOK =
+        filter === "all" ||
+        (filter === "favorites" ? x.favorite : true);
+
+      const tagOK =
+        tag === "all" || x.tags.includes(tag);
+
+      const collectionOK =
+        !activeCollection ||
+        x.collection === activeCollection;
+
+      const haystack = [
+        x.title,
+        x.content,
+        x.url ?? "",
+        x.type,
+        x.fileName ?? "",
+        ...x.tags,
+      ]
+        .join(" ")
+        .toLowerCase();
+
+      return (
+        viewOK &&
+        filterOK &&
+        tagOK &&
+        collectionOK &&
+        (!q || haystack.includes(q))
+      );
     });
-    if (filter === "recent") result = result.slice(0, 6);
+
+    if (filter === "recent") {
+      result = result.slice(0, 6);
+    }
+
     return result;
-  }, [items, view, filter, tag, search, activeCollection]);
+  }, [
+    items,
+    view,
+    filter,
+    tag,
+    search,
+    activeCollection,
+  ]);
 
   function notify(message: string) {
     setToast(message);
-    window.setTimeout(() => setToast(""), 2200);
+
+    window.setTimeout(() => {
+      setToast("");
+    }, 2200);
   }
 
   async function addSignedUrls(rows: Item[]) {
-    const paths = rows.map(x => x.file_path).filter(Boolean) as string[];
+    const paths = rows
+      .map((x) => x.file_path)
+      .filter(Boolean) as string[];
+
     if (!paths.length) return rows;
-    const { data, error } = await supabase.storage.from(BUCKET).createSignedUrls(paths, 60 * 60);
-    if (error) { notify(`Could not prepare file previews: ${error.message}`); return rows; }
+
+    const {
+      data,
+      error,
+    } = await supabase.storage
+      .from(BUCKET)
+      .createSignedUrls(paths, 60 * 60);
+
+    if (error) {
+      notify(
+        `Could not prepare file previews: ${error.message}`
+      );
+
+      return rows;
+    }
+
     const map = new Map<string, string>();
-    (data ?? []).forEach((entry: any, i: number) => {
-      if (entry?.signedUrl) map.set(paths[i], entry.signedUrl);
-    });
-    return rows.map(x => ({ ...x, mediaUrl: x.file_path ? map.get(x.file_path) ?? null : null }));
+
+    (data ?? []).forEach(
+      (entry: any, i: number) => {
+        if (entry?.signedUrl) {
+          map.set(paths[i], entry.signedUrl);
+        }
+      }
+    );
+
+    return rows.map((x) => ({
+      ...x,
+      mediaUrl: x.file_path
+        ? map.get(x.file_path) ?? null
+        : null,
+    }));
   }
 
-  function isImage(item: Item) { return !!item.mime_type?.startsWith("image/"); }
-  function isVideo(item: Item) { return !!item.mime_type?.startsWith("video/"); }
-  function isAudio(item: Item) { return !!item.mime_type?.startsWith("audio/"); }
+  function isImage(item: Item) {
+    return !!item.mime_type?.startsWith("image/");
+  }
+
+  function isVideo(item: Item) {
+    return !!item.mime_type?.startsWith("video/");
+  }
+
+  function isAudio(item: Item) {
+    return !!item.mime_type?.startsWith("audio/");
+  }
 
   function openEditor(item: Item) {
     setEditingId(item.id);
-    setForm({ title: item.title, tags: item.tags.join(", "), url: item.url ?? "", content: item.content });
+
+    setForm({
+      title: item.title,
+      tags: item.tags.join(", "),
+      url: item.url ?? "",
+      content: item.content,
+    });
+
     setModal("editor");
   }
 
-  async function createItem(type: ItemType, selectedFile?: File) {
-    const { data: sessionData } = await supabase.auth.getSession();
+  async function createItem(
+    type: ItemType,
+    selectedFile?: File
+  ) {
+    const {
+      data: sessionData,
+    } = await supabase.auth.getSession();
+
     const user = sessionData.session?.user;
-    if (!user) { setAuthRequired(true); notify("Please sign in first"); return; }
+
+    if (!user) {
+      setAuthRequired(true);
+      notify("Please sign in first");
+      return;
+    }
+
     setSaving(true);
 
     let filePath: string | null = null;
@@ -300,47 +787,126 @@ export default function Page() {
     let actualType = type;
 
     if (selectedFile) {
-      const safeName = selectedFile.name.replace(/[^a-zA-Z0-9._-]/g, "-");
+      const safeName = selectedFile.name.replace(
+        /[^a-zA-Z0-9._-]/g,
+        "-"
+      );
+
       filePath = `${user.id}/${crypto.randomUUID()}-${safeName}`;
       fileName = selectedFile.name;
-      mimeType = selectedFile.type || "application/octet-stream";
+      mimeType =
+        selectedFile.type ||
+        "application/octet-stream";
       fileSize = selectedFile.size;
-      actualType = mimeType.startsWith("image/") || mimeType.startsWith("video/") || mimeType.startsWith("audio/") ? "media" : "file";
 
-      const { error: uploadError } = await supabase.storage.from("vault files").upload(filePath, selectedFile, {
-        contentType: mimeType,
-        upsert: false,
-      });
+      actualType =
+        mimeType.startsWith("image/") ||
+        mimeType.startsWith("video/") ||
+        mimeType.startsWith("audio/")
+          ? "media"
+          : "file";
+
+      const {
+        error: uploadError,
+      } = await supabase.storage
+        .from(BUCKET)
+        .upload(filePath, selectedFile, {
+          contentType: mimeType,
+          upsert: false,
+        });
+
       if (uploadError) {
         setSaving(false);
-        notify(`Upload failed: ${uploadError.message}`);
+
+        notify(
+          `Upload failed: ${uploadError.message}`
+        );
+
         return;
       }
     }
 
     const payload: any = {
-      user_id: user.id, type: actualType, title: selectedFile?.name ?? `New ${typeLabel[actualType]}`,
-      content: selectedFile ? `Uploaded file: ${selectedFile.name}` : "Start adding your content here.",
-      tags: ["New"], favorite: false, collection: activeCollection,
-      ...(actualType === "link" ? { url: "https://" } : {}),
-      ...(selectedFile ? { file_path: filePath, file_name: fileName, mime_type: mimeType, file_size: fileSize } : {}),
+      user_id: user.id,
+      type: actualType,
+      title:
+        selectedFile?.name ??
+        `New ${typeLabel[actualType]}`,
+      content: selectedFile
+        ? `Uploaded file: ${selectedFile.name}`
+        : "Start adding your content here.",
+      tags: ["New"],
+      favorite: false,
+      collection: activeCollection,
+      ...(actualType === "link"
+        ? { url: "https://" }
+        : {}),
+      ...(selectedFile
+        ? {
+            file_path: filePath,
+            file_name: fileName,
+            mime_type: mimeType,
+            file_size: fileSize,
+          }
+        : {}),
     };
-    const { data, error } = await supabase.from("items").insert(payload).select("*").single();
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from("items")
+      .insert(payload)
+      .select("*")
+      .single();
+
     setSaving(false);
+
     if (error) {
-      if (filePath) await supabase.storage.from("vault files").remove([filePath]);
-      notify(`Could not save: ${error.message}`);
+      if (filePath) {
+        await supabase.storage
+          .from(BUCKET)
+          .remove([filePath]);
+      }
+
+      notify(
+        `Could not save: ${error.message}`
+      );
+
       return;
     }
-    const item = (await addSignedUrls([dbToItem(data)]))[0];
-    setItems((current) => [item, ...current]);
-    setModal(null); setView("all"); setFilter("all"); setTag("all");
+
+    const item = (
+      await addSignedUrls([dbToItem(data)])
+    )[0];
+
+    setItems((current) => [
+      item,
+      ...current,
+    ]);
+
+    setModal(null);
+    setView("all");
+    setFilter("all");
+    setTag("all");
+
     if (selectedFile) {
-      notify(`${selectedFile.name} uploaded successfully`);
+      notify(
+        `${selectedFile.name} uploaded successfully`
+      );
+
       return;
     }
+
     setEditingId(item.id);
-    setForm({ title: item.title, tags: item.tags.join(", "), url: item.url ?? "", content: item.content });
+
+    setForm({
+      title: item.title,
+      tags: item.tags.join(", "),
+      url: item.url ?? "",
+      content: item.content,
+    });
+
     setModal("editor");
   }
 
@@ -348,68 +914,386 @@ export default function Page() {
     await createItem("file", file);
   }
 
-  async function saveEdit(e: React.FormEvent) {
+  async function saveEdit(
+    e: React.FormEvent
+  ) {
     e.preventDefault();
+
     if (!editingId) return;
+
     setSaving(true);
-    const current = items.find((x) => x.id === editingId);
+
+    const current = items.find(
+      (x) => x.id === editingId
+    );
+
     const updates: any = {
-      title: form.title.trim() || "Untitled", tags: form.tags.split(",").map((s) => s.trim()).filter(Boolean),
-      content: form.content.trim(), updated_at: new Date().toISOString(),
+      title:
+        form.title.trim() || "Untitled",
+      tags: form.tags
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      content: form.content.trim(),
+      updated_at:
+        new Date().toISOString(),
     };
-    if (current?.type === "link") updates.url = form.url.trim();
-    const { data, error } = await supabase.from("items").update(updates).eq("id", editingId).select("*").single();
+
+    if (current?.type === "link") {
+      updates.url = form.url.trim();
+    }
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from("items")
+      .update(updates)
+      .eq("id", editingId)
+      .select("*")
+      .single();
+
     setSaving(false);
-    if (error) { notify(`Could not save: ${error.message}`); return; }
-    setItems((currentItems) => currentItems.map((x) => x.id === editingId ? dbToItem(data) : x));
-    setModal(null); notify("Saved to your vault");
+
+    if (error) {
+      notify(
+        `Could not save: ${error.message}`
+      );
+
+      return;
+    }
+
+    setItems((currentItems) =>
+      currentItems.map((x) =>
+        x.id === editingId
+          ? dbToItem(data)
+          : x
+      )
+    );
+
+    setModal(null);
+
+    notify("Saved to your vault");
   }
 
-  async function toggleFavorite(id: string) {
-    const item = items.find((x) => x.id === id); if (!item) return;
-    const { data, error } = await supabase.from("items").update({ favorite: !item.favorite, updated_at: new Date().toISOString() }).eq("id", id).select("*").single();
-    if (error) { notify(`Could not update favorite: ${error.message}`); return; }
-    setItems((current) => current.map((x) => x.id === id ? dbToItem(data) : x));
+  async function saveSharedContent(
+    e: React.FormEvent
+  ) {
+    e.preventDefault();
+
+    const title =
+      form.title.trim() ||
+      (form.url.trim()
+        ? "Shared link"
+        : "Shared text");
+
+    const content =
+      form.content.trim() ||
+      form.url.trim();
+
+    const url =
+      form.url.trim() || null;
+
+    const {
+      data: sessionData,
+    } = await supabase.auth.getSession();
+
+    const user =
+      sessionData.session?.user;
+
+    if (!user) {
+      setAuthRequired(true);
+      notify("Please sign in first");
+      return;
+    }
+
+    setSaving(true);
+
+    const payload: any = {
+      user_id: user.id,
+      type: url ? "link" : "note",
+      title,
+      content,
+      tags: form.tags
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean),
+      favorite: false,
+      collection: activeCollection,
+      ...(url ? { url } : {}),
+    };
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from("items")
+      .insert(payload)
+      .select("*")
+      .single();
+
+    setSaving(false);
+
+    if (error) {
+      notify(
+        `Could not save shared content: ${error.message}`
+      );
+
+      return;
+    }
+
+    const item = dbToItem(data);
+
+    setItems((current) => [
+      item,
+      ...current,
+    ]);
+
+    setModal(null);
+    setEditingId(null);
+    setForm({
+      title: "",
+      tags: "",
+      url: "",
+      content: "",
+    });
+
+    setView("all");
+    setFilter("all");
+    setTag("all");
+
+    notify(
+      url
+        ? "Link saved to your vault"
+        : "Shared content saved"
+    );
   }
 
-  async function deleteItem(id: string) {
-    if (!window.confirm("Move this item to Recycle Bin? It can be restored for 30 days.")) return;
-    const deletedAt = new Date().toISOString();
-    const { error } = await supabase.from("items").update({ deleted_at: deletedAt, updated_at: deletedAt }).eq("id", id);
-    if (error) { notify(`Could not move to Recycle Bin: ${error.message}`); return; }
-    setItems((current) => current.filter((x) => x.id !== id)); notify("Moved to Recycle Bin");
+  async function toggleFavorite(
+    id: string
+  ) {
+    const item = items.find(
+      (x) => x.id === id
+    );
+
+    if (!item) return;
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from("items")
+      .update({
+        favorite: !item.favorite,
+        updated_at:
+          new Date().toISOString(),
+      })
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (error) {
+      notify(
+        `Could not update favorite: ${error.message}`
+      );
+
+      return;
+    }
+
+    setItems((current) =>
+      current.map((x) =>
+        x.id === id
+          ? dbToItem(data)
+          : x
+      )
+    );
   }
 
-  async function moveToCollection(id: string, collection: string) {
-    const clean = collection.trim(); if (!clean) return;
-    const { data, error } = await supabase.from("items").update({ collection: clean, updated_at: new Date().toISOString() }).eq("id", id).select("*").single();
-    if (error) { notify(`Could not move item: ${error.message}`); return; }
-    setItems((current) => current.map((x) => x.id === id ? dbToItem(data) : x)); notify(`Moved to ${clean}`);
+  async function deleteItem(
+    id: string
+  ) {
+    if (
+      !window.confirm(
+        "Move this item to Recycle Bin? It can be restored for 30 days."
+      )
+    ) {
+      return;
+    }
+
+    const deletedAt =
+      new Date().toISOString();
+
+    const {
+      error,
+    } = await supabase
+      .from("items")
+      .update({
+        deleted_at: deletedAt,
+        updated_at: deletedAt,
+      })
+      .eq("id", id);
+
+    if (error) {
+      notify(
+        `Could not move to Recycle Bin: ${error.message}`
+      );
+
+      return;
+    }
+
+    setItems((current) =>
+      current.filter(
+        (x) => x.id !== id
+      )
+    );
+
+    notify("Moved to Recycle Bin");
   }
 
-  function handleCollectionDragOver(e: React.DragEvent) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; }
-  async function handleCollectionDrop(e: React.DragEvent, collection: string) {
-    e.preventDefault(); const id = e.dataTransfer.getData("text/my-vault-item") || e.dataTransfer.getData("text/plain"); if (id) await moveToCollection(id, collection); else notify("Drag a card from the vault onto a collection.");
+  async function moveToCollection(
+    id: string,
+    collection: string
+  ) {
+    const clean = collection.trim();
+
+    if (!clean) return;
+
+    const {
+      data,
+      error,
+    } = await supabase
+      .from("items")
+      .update({
+        collection: clean,
+        updated_at:
+          new Date().toISOString(),
+      })
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (error) {
+      notify(
+        `Could not move item: ${error.message}`
+      );
+
+      return;
+    }
+
+    setItems((current) =>
+      current.map((x) =>
+        x.id === id
+          ? dbToItem(data)
+          : x
+      )
+    );
+
+    notify(`Moved to ${clean}`);
+  }
+
+  function handleCollectionDragOver(
+    e: React.DragEvent
+  ) {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  }
+
+  async function handleCollectionDrop(
+    e: React.DragEvent,
+    collection: string
+  ) {
+    e.preventDefault();
+
+    const id =
+      e.dataTransfer.getData(
+        "text/my-vault-item"
+      ) ||
+      e.dataTransfer.getData(
+        "text/plain"
+      );
+
+    if (id) {
+      await moveToCollection(
+        id,
+        collection
+      );
+    } else {
+      notify(
+        "Drag a card from the vault onto a collection."
+      );
+    }
   }
 
   async function createCollection() {
-    const name = window.prompt("Collection name");
+    const name =
+      window.prompt("Collection name");
+
     if (!name?.trim()) return;
+
     const clean = name.trim();
-    if (collections.some(c => c.toLowerCase() === clean.toLowerCase())) {
-      const existing = collections.find(c => c.toLowerCase() === clean.toLowerCase())!;
+
+    if (
+      collections.some(
+        (c) =>
+          c.toLowerCase() ===
+          clean.toLowerCase()
+      )
+    ) {
+      const existing =
+        collections.find(
+          (c) =>
+            c.toLowerCase() ===
+            clean.toLowerCase()
+        )!;
+
       setActiveCollection(existing);
-      notify("That collection already exists");
+      notify(
+        "That collection already exists"
+      );
+
       return;
     }
-    const { data: sessionData } = await supabase.auth.getSession();
-    const user = sessionData.session?.user;
-    if (!user) { setAuthRequired(true); notify("Please sign in again."); return; }
-    const { error } = await supabase.from("collections").insert({ user_id: user.id, name: clean });
-    if (error) { notify(`Could not save collection: ${error.message}`); return; }
-    setCollections(current => [...current, clean]);
+
+    const {
+      data: sessionData,
+    } = await supabase.auth.getSession();
+
+    const user =
+      sessionData.session?.user;
+
+    if (!user) {
+      setAuthRequired(true);
+      notify("Please sign in again.");
+      return;
+    }
+
+    const {
+      error,
+    } = await supabase
+      .from("collections")
+      .insert({
+        user_id: user.id,
+        name: clean,
+      });
+
+    if (error) {
+      notify(
+        `Could not save collection: ${error.message}`
+      );
+
+      return;
+    }
+
+    setCollections((current) => [
+      ...current,
+      clean,
+    ]);
+
     setActiveCollection(clean);
-    notify(`Collection "${clean}" created — you can drag cards here or use Move…`);
+
+    notify(
+      `Collection "${clean}" created — you can drag cards here or use Move…`
+    );
   }
 
   function openItem(item: Item) {
@@ -418,27 +1302,121 @@ export default function Page() {
       setModal("viewer");
       return;
     }
-    if (item.url && item.url !== "https://") {
-      if (!window.confirm(`Open this link in a new tab?\n\n${item.url}`)) return;
-      window.open(item.url, "_blank", "noopener,noreferrer");
+
+    if (
+      item.url &&
+      item.url !== "https://"
+    ) {
+      if (
+        !window.confirm(
+          `Open this link in a new tab?\n\n${item.url}`
+        )
+      ) {
+        return;
+      }
+
+      window.open(
+        item.url,
+        "_blank",
+        "noopener,noreferrer"
+      );
+
       return;
     }
+
     if (item.file_path) {
       void (async () => {
-        const { data, error } = await supabase.storage.from(BUCKET).createSignedUrl(item.file_path!, 60 * 60);
-        if (error || !data?.signedUrl) { notify(`Could not open file: ${error?.message ?? "No secure file URL"}`); return; }
-        if (!window.confirm(`Open “${item.fileName ?? item.title}” in a new tab?`)) return;
-        window.open(data.signedUrl, "_blank", "noopener,noreferrer");
+        const {
+          data,
+          error,
+        } = await supabase.storage
+          .from(BUCKET)
+          .createSignedUrl(
+            item.file_path!,
+            60 * 60
+          );
+
+        if (
+          error ||
+          !data?.signedUrl
+        ) {
+          notify(
+            `Could not open file: ${
+              error?.message ??
+              "No secure file URL"
+            }`
+          );
+
+          return;
+        }
+
+        if (
+          !window.confirm(
+            `Open “${
+              item.fileName ??
+              item.title
+            }” in a new tab?`
+          )
+        ) {
+          return;
+        }
+
+        window.open(
+          data.signedUrl,
+          "_blank",
+          "noopener,noreferrer"
+        );
       })();
+
       return;
     }
+
     openEditor(item);
   }
 
-  const title = search ? `Results for “${search}”` : ({ all: "Everything worth keeping.", notes: "Your notes, organized.", links: "Links worth returning to.", media: "Your saved media.", files: "Files in your vault.", favorites: "Your saved favorites.", trash: "Recently deleted items." } as Record<string, string>)[view] ?? "Everything worth keeping.";
-  const setViewAndReset = (next: string) => { setView(next); setFilter("all"); setTag("all"); setActiveCollection(null); setMobileMenuOpen(false); };
+  const title = search
+    ? `Results for “${search}”`
+    : (
+        {
+          all: "Everything worth keeping.",
+          notes: "Your notes, organized.",
+          links: "Links worth returning to.",
+          media: "Your saved media.",
+          files: "Files in your vault.",
+          favorites:
+            "Your saved favorites.",
+          trash:
+            "Recently deleted items.",
+        } as Record<string, string>
+      )[view] ??
+      "Everything worth keeping.";
 
-  const contextualCaptureLabel = view === "notes" ? "＋ Add note" : view === "links" ? "＋ Add URL" : view === "media" ? "＋ Add media" : view === "files" ? "＋ Upload file" : view === "favorites" ? "＋ Capture favorite" : view === "trash" ? "Recycle Bin" : activeCollection ? `＋ Add to ${activeCollection}` : "＋ Capture";
+  const setViewAndReset = (
+    next: string
+  ) => {
+    setView(next);
+    setFilter("all");
+    setTag("all");
+    setActiveCollection(null);
+    setMobileMenuOpen(false);
+  };
+
+  const contextualCaptureLabel =
+    view === "notes"
+      ? "＋ Add note"
+      : view === "links"
+      ? "＋ Add URL"
+      : view === "media"
+      ? "＋ Add media"
+      : view === "files"
+      ? "＋ Upload file"
+      : view === "favorites"
+      ? "＋ Capture favorite"
+      : view === "trash"
+      ? "Recycle Bin"
+      : activeCollection
+      ? `＋ Add to ${activeCollection}`
+      : "＋ Capture";
 
   if (authRequired) {
     return (
@@ -460,18 +1438,80 @@ export default function Page() {
           .auth-error{padding:11px 12px;border-radius:12px;background:rgba(220,60,60,.10);color:#c53a3a;font-size:13px;line-height:1.4;}
           .auth-note{display:block;margin-top:18px;opacity:.52;line-height:1.45;}
         `}</style>
+
         <main className="auth-card">
-          <div className="brand-mark auth-logo"><span /><i /></div>
-          <div className="auth-kicker">PRIVATE CLOUD VAULT</div>
+          <div className="brand-mark auth-logo">
+            <span />
+            <i />
+          </div>
+
+          <div className="auth-kicker">
+            PRIVATE CLOUD VAULT
+          </div>
+
           <h1>Welcome to My VaulT</h1>
-          <p>Sign in to access your private notes, files, media and collections.</p>
-          <form onSubmit={(e) => { e.preventDefault(); void signIn(); }}>
-            <label>Email<input type="email" value={authEmail} onChange={e => setAuthEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" /></label>
-            <label>Password<input type="password" value={authPassword} onChange={e => setAuthPassword(e.target.value)} autoComplete="current-password" placeholder="Your password" /></label>
-            {authError && <div className="auth-error">{authError}</div>}
-            <button className="primary auth-submit" type="submit" disabled={authBusy}>{authBusy ? "Signing in…" : "Sign in"}</button>
+
+          <p>
+            Sign in to access your private
+            notes, files, media and collections.
+          </p>
+
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void signIn();
+            }}
+          >
+            <label>
+              Email
+              <input
+                type="email"
+                value={authEmail}
+                onChange={(e) =>
+                  setAuthEmail(e.target.value)
+                }
+                autoComplete="email"
+                placeholder="you@example.com"
+              />
+            </label>
+
+            <label>
+              Password
+              <input
+                type="password"
+                value={authPassword}
+                onChange={(e) =>
+                  setAuthPassword(
+                    e.target.value
+                  )
+                }
+                autoComplete="current-password"
+                placeholder="Your password"
+              />
+            </label>
+
+            {authError && (
+              <div className="auth-error">
+                {authError}
+              </div>
+            )}
+
+            <button
+              className="primary auth-submit"
+              type="submit"
+              disabled={authBusy}
+            >
+              {authBusy
+                ? "Signing in…"
+                : "Sign in"}
+            </button>
           </form>
-          <small className="auth-note">Your vault data remains protected by your Supabase account and database access policies.</small>
+
+          <small className="auth-note">
+            Your vault data remains protected
+            by your Supabase account and database
+            access policies.
+          </small>
         </main>
       </div>
     );
@@ -480,42 +1520,1678 @@ export default function Page() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <button className="brand" onClick={() => setViewAndReset("all")} aria-label="Go home"><div className="brand-mark"><span /><i /></div><div><strong>My VaulT</strong><small>Personal knowledge vault</small></div></button>
-        <button className="capture-btn" onClick={() => setModal("capture")} disabled={saving}><span className="plus">+</span><span>Capture</span><kbd>C</kbd></button>
-        <nav className="nav">{[["all","⌂","All items",items.length],["notes","▤","Notes",items.filter(x=>x.type==="note").length],["links","↗","Links",items.filter(x=>x.type==="link").length],["media","◉","Media",items.filter(x=>x.type==="media").length],["files","□","Files",items.filter(x=>x.type==="file").length],["favorites","★","Favorites",items.filter(x=>x.favorite).length],["trash","♻","Recycle Bin",""]].map(([key,icon,label,count])=><button key={String(key)} className={`nav-item ${view===key?"active":""}`} onClick={()=>setViewAndReset(String(key))}><span>{icon}</span><b>{label}</b><em>{count}</em></button>)}</nav>
+        <button
+          className="brand"
+          onClick={() =>
+            setViewAndReset("all")
+          }
+          aria-label="Go home"
+        >
+          <div className="brand-mark">
+            <span />
+            <i />
+          </div>
+
+          <div>
+            <strong>My VaulT</strong>
+            <small>
+              Personal knowledge vault
+            </small>
+          </div>
+        </button>
+
+        <button
+          className="capture-btn"
+          onClick={() =>
+            setModal("capture")
+          }
+          disabled={saving}
+        >
+          <span className="plus">+</span>
+          <span>Capture</span>
+          <kbd>C</kbd>
+        </button>
+
+        <nav className="nav">
+          {[
+            [
+              "all",
+              "⌂",
+              "All items",
+              items.length,
+            ],
+            [
+              "notes",
+              "▤",
+              "Notes",
+              items.filter(
+                (x) => x.type === "note"
+              ).length,
+            ],
+            [
+              "links",
+              "↗",
+              "Links",
+              items.filter(
+                (x) => x.type === "link"
+              ).length,
+            ],
+            [
+              "media",
+              "◉",
+              "Media",
+              items.filter(
+                (x) => x.type === "media"
+              ).length,
+            ],
+            [
+              "files",
+              "□",
+              "Files",
+              items.filter(
+                (x) => x.type === "file"
+              ).length,
+            ],
+            [
+              "favorites",
+              "★",
+              "Favorites",
+              items.filter(
+                (x) => x.favorite
+              ).length,
+            ],
+            [
+              "trash",
+              "♻",
+              "Recycle Bin",
+              "",
+            ],
+          ].map(
+            ([
+              key,
+              icon,
+              label,
+              count,
+            ]) => (
+              <button
+                key={String(key)}
+                className={`nav-item ${
+                  view === key
+                    ? "active"
+                    : ""
+                }`}
+                onClick={() =>
+                  setViewAndReset(
+                    String(key)
+                  )
+                }
+              >
+                <span>{icon}</span>
+                <b>{label}</b>
+                <em>{count}</em>
+              </button>
+            )
+          )}
+        </nav>
+
         <div className="sidebar-section">
-<div className="section-label">Collections</div>
-{collections.length===0 && <div className="collection-empty">Create a collection, then drag a card here.</div>}
-{collections.map(x=><button className={`collection ${activeCollection===x?"active":""}`} key={x} onClick={()=>setActiveCollection(activeCollection===x?null:x)} onDragOver={handleCollectionDragOver} onDrop={(e)=>handleCollectionDrop(e,x)}><i />{x}<small>Drop</small></button>)}
-<button className="new-collection" onClick={createCollection}>＋ New collection</button>
-</div>
-        <div className="sidebar-bottom"><button className="mini-nav" onClick={()=>setTheme(theme==="dark"?"light":"dark")}><span>◐</span> Appearance <small>{theme==="dark"?"Dark":"Light"}</small></button><button className="mini-nav" onClick={()=>setModal("settings")}><span>⚙</span> Settings</button><button className="account" onClick={()=>setModal("account")}><div className="avatar">M</div><div><b>Manoj</b><small>{userEmail || "Signed in"}</small></div><span>•••</span></button></div>
+          <div className="section-label">
+            Collections
+          </div>
+
+          {collections.length === 0 && (
+            <div className="collection-empty">
+              Create a collection, then
+              drag a card here.
+            </div>
+          )}
+
+          {collections.map((x) => (
+            <button
+              className={`collection ${
+                activeCollection === x
+                  ? "active"
+                  : ""
+              }`}
+              key={x}
+              onClick={() =>
+                setActiveCollection(
+                  activeCollection === x
+                    ? null
+                    : x
+                )
+              }
+              onDragOver={
+                handleCollectionDragOver
+              }
+              onDrop={(e) =>
+                handleCollectionDrop(
+                  e,
+                  x
+                )
+              }
+            >
+              <i />
+              {x}
+              <small>Drop</small>
+            </button>
+          ))}
+
+          <button
+            className="new-collection"
+            onClick={createCollection}
+          >
+            ＋ New collection
+          </button>
+        </div>
+
+        <div className="sidebar-bottom">
+          <button
+            className="mini-nav"
+            onClick={() =>
+              setTheme(
+                theme === "dark"
+                  ? "light"
+                  : "dark"
+              )
+            }
+          >
+            <span>◐</span>
+            Appearance
+            <small>
+              {theme === "dark"
+                ? "Dark"
+                : "Light"}
+            </small>
+          </button>
+
+          <button
+            className="mini-nav"
+            onClick={() =>
+              setModal("settings")
+            }
+          >
+            <span>⚙</span>
+            Settings
+          </button>
+
+          <button
+            className="account"
+            onClick={() =>
+              setModal("account")
+            }
+          >
+            <div className="avatar">
+              M
+            </div>
+
+            <div>
+              <b>Manoj</b>
+              <small>
+                {userEmail ||
+                  "Signed in"}
+              </small>
+            </div>
+
+            <span>•••</span>
+          </button>
+        </div>
       </aside>
+
       <main className="main">
-        <header className="topbar"><button className="mobile-menu-btn" onClick={()=>setMobileMenuOpen(true)} aria-label="Open navigation">☰</button><button className="mobile-brand" onClick={()=>setViewAndReset("all")}><div className="brand-mark"><span /><i /></div><strong>My VaulT</strong></button><div className="breadcrumbs"><span>Vault</span><i>/</i><b>{view === "all" ? "All items" : view[0].toUpperCase()+view.slice(1)}</b></div><div className="top-actions"><button className="icon-btn" onClick={()=>document.getElementById("vault-search")?.focus()}>⌕</button><button className="icon-btn" onClick={()=>setModal("settings")}>⚙</button><button className="profile" onClick={()=>setModal("account")}>M</button></div></header>
-        <section className="content"><div className="section-capture-row"><button className="context-capture-btn" onClick={()=>setModal("capture")} disabled={saving || view === "trash"}>{contextualCaptureLabel}</button><span>Save something new without leaving this section.</span></div><div className="hero"><div><div className="eyebrow"><span className="live-dot" /> {loading ? "Loading your vault" : "Your vault is ready"}</div><h1>{title}</h1><p>Capture ideas, links, files and media. Find them instantly when you need them.</p></div><div className="hero-stat"><strong>{items.length}</strong><span>saved items</span></div></div>
-          <div className="toolbar"><div className="search-wrap"><span>⌕</span><input id="vault-search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search your vault..." autoComplete="off"/><kbd>⌘ K</kbd></div><div className="toolbar-actions">{["all","recent","favorites"].map(x=><button key={x} className={`filter-btn ${filter===x?"active":""}`} onClick={()=>setFilter(x)}>{x==="favorites"?"★":x[0].toUpperCase()+x.slice(1)}</button>)}<button className={`view-btn ${layout==="grid"?"active":""}`} onClick={()=>setLayout("grid")}>▦</button><button className={`view-btn ${layout==="list"?"active":""}`} onClick={()=>setLayout("list")}>☷</button></div></div>
-          <div className="chip-row">{["all","EV","Battery","Engineering","Project"].map(x=><button key={x} className={`chip ${tag===x?"active":""}`} onClick={()=>setTag(x)}>{x==="all"?"All":x}</button>)}</div>
-          <div className="result-meta"><span>{activeCollection?`Collection: ${activeCollection} · `:""}{filtered.length} {filtered.length===1?"item":"items"}</span><button onClick={()=>setSearch("")}>Clear search</button></div>
-          {loading ? <div className="empty"><div>◌</div><h3>Loading your vault…</h3><p>Fetching your saved items securely.</p></div> : view === "trash" ? <TrashBin notify={notify} onRestored={(restored)=>{setItems(current=>[restored,...current.filter(x=>x.id!==restored.id)]);setView("all");setActiveCollection(restored.collection ?? null);}} /> : filtered.length===0 ? <div className="empty"><div>⌕</div><h3>{search?"No matching items":"Your vault is empty"}</h3><p>{search?"Try another keyword, tag, or content type.":"Use Capture to add your first item."}</p></div> : <div className={`cards ${layout==="list"?"list":""}`}>{filtered.map(x=><article className="card" key={x.id} draggable onDragStart={(e)=>{e.dataTransfer.setData("text/my-vault-item", x.id);e.dataTransfer.setData("text/plain", x.id);e.dataTransfer.effectAllowed="move"}}><div className={`card-top ${x.mediaUrl?"has-media":""}`}>{x.mediaUrl&&isImage(x)&&<img src={x.mediaUrl} alt="" loading="lazy"/>}{x.mediaUrl&&isVideo(x)&&<video src={x.mediaUrl} muted playsInline preload="metadata"/>}<span className="type-badge">{typeIcon[x.type]} {typeLabel[x.type]}</span><button className={`favorite ${x.favorite?"on":""}`} onClick={()=>toggleFavorite(x.id)}>{x.favorite?"★":"☆"}</button></div><div className="card-body"><h3>{x.title}</h3><p>{x.fileName ? `${x.fileName}${x.file_size ? ` · ${formatBytes(x.file_size)}` : ""}` : x.content}</p><div className="tags">{x.tags.map(t=><span className="tag" key={t}>{t}</span>)}</div><div className="card-foot"><span>{x.date}</span><div className="card-actions">
-<button title="Edit" onClick={()=>openEditor(x)}>✎</button>
-<button title="Open" onClick={()=>openItem(x)}>↗</button>
-{collections.length>0 && <select className="collection-select" value={x.collection ?? ""} onChange={e=>{const value=e.target.value;if(value) moveToCollection(x.id,value);}} title="Move to collection">
-<option value="">Move…</option>
-{collections.map(c=><option key={c} value={c}>{c}</option>)}
-</select>}
-<button title="Delete" className="danger-action" onClick={()=>deleteItem(x.id)}>⌫</button>
-</div></div></div></article>)}</div>}
+        <header className="topbar">
+          <button
+            className="mobile-menu-btn"
+            onClick={() =>
+              setMobileMenuOpen(true)
+            }
+            aria-label="Open navigation"
+          >
+            ☰
+          </button>
+
+          <button
+            className="mobile-brand"
+            onClick={() =>
+              setViewAndReset("all")
+            }
+          >
+            <div className="brand-mark">
+              <span />
+              <i />
+            </div>
+
+            <strong>My VaulT</strong>
+          </button>
+
+          <div className="breadcrumbs">
+            <span>Vault</span>
+            <i>/</i>
+            <b>
+              {view === "all"
+                ? "All items"
+                : view[0].toUpperCase() +
+                  view.slice(1)}
+            </b>
+          </div>
+
+          <div className="top-actions">
+            <button
+              className="icon-btn"
+              onClick={() =>
+                document
+                  .getElementById(
+                    "vault-search"
+                  )
+                  ?.focus()
+              }
+            >
+              ⌕
+            </button>
+
+            <button
+              className="icon-btn"
+              onClick={() =>
+                setModal("settings")
+              }
+            >
+              ⚙
+            </button>
+
+            <button
+              className="profile"
+              onClick={() =>
+                setModal("account")
+              }
+            >
+              M
+            </button>
+          </div>
+        </header>
+
+        <section className="content">
+          <div className="section-capture-row">
+            <button
+              className="context-capture-btn"
+              onClick={() =>
+                setModal("capture")
+              }
+              disabled={
+                saving ||
+                view === "trash"
+              }
+            >
+              {contextualCaptureLabel}
+            </button>
+
+            <span>
+              Save something new without
+              leaving this section.
+            </span>
+          </div>
+
+          <div className="hero">
+            <div>
+              <div className="eyebrow">
+                <span className="live-dot" />{" "}
+                {loading
+                  ? "Loading your vault"
+                  : "Your vault is ready"}
+              </div>
+
+              <h1>{title}</h1>
+
+              <p>
+                Capture ideas, links, files
+                and media. Find them instantly
+                when you need them.
+              </p>
+            </div>
+
+            <div className="hero-stat">
+              <strong>
+                {items.length}
+              </strong>
+              <span>saved items</span>
+            </div>
+          </div>
+
+          <div className="toolbar">
+            <div className="search-wrap">
+              <span>⌕</span>
+
+              <input
+                id="vault-search"
+                value={search}
+                onChange={(e) =>
+                  setSearch(
+                    e.target.value
+                  )
+                }
+                placeholder="Search your vault..."
+                autoComplete="off"
+              />
+
+              <kbd>⌘ K</kbd>
+            </div>
+
+            <div className="toolbar-actions">
+              {[
+                "all",
+                "recent",
+                "favorites",
+              ].map((x) => (
+                <button
+                  key={x}
+                  className={`filter-btn ${
+                    filter === x
+                      ? "active"
+                      : ""
+                  }`}
+                  onClick={() =>
+                    setFilter(x)
+                  }
+                >
+                  {x === "favorites"
+                    ? "★"
+                    : x[0].toUpperCase() +
+                      x.slice(1)}
+                </button>
+              ))}
+
+              <button
+                className={`view-btn ${
+                  layout === "grid"
+                    ? "active"
+                    : ""
+                }`}
+                onClick={() =>
+                  setLayout("grid")
+                }
+              >
+                ▦
+              </button>
+
+              <button
+                className={`view-btn ${
+                  layout === "list"
+                    ? "active"
+                    : ""
+                }`}
+                onClick={() =>
+                  setLayout("list")
+                }
+              >
+                ☷
+              </button>
+            </div>
+          </div>
+
+          <div className="chip-row">
+            {[
+              "all",
+              "EV",
+              "Battery",
+              "Engineering",
+              "Project",
+            ].map((x) => (
+              <button
+                key={x}
+                className={`chip ${
+                  tag === x
+                    ? "active"
+                    : ""
+                }`}
+                onClick={() =>
+                  setTag(x)
+                }
+              >
+                {x === "all"
+                  ? "All"
+                  : x}
+              </button>
+            ))}
+          </div>
+
+          <div className="result-meta">
+            <span>
+              {activeCollection
+                ? `Collection: ${activeCollection} · `
+                : ""}
+              {filtered.length}{" "}
+              {filtered.length === 1
+                ? "item"
+                : "items"}
+            </span>
+
+            <button
+              onClick={() =>
+                setSearch("")
+              }
+            >
+              Clear search
+            </button>
+          </div>
+
+          {loading ? (
+            <div className="empty">
+              <div>◌</div>
+              <h3>
+                Loading your vault…
+              </h3>
+              <p>
+                Fetching your saved items
+                securely.
+              </p>
+            </div>
+          ) : view === "trash" ? (
+            <TrashBin
+              notify={notify}
+              onRestored={(restored) => {
+                setItems((current) => [
+                  restored,
+                  ...current.filter(
+                    (x) =>
+                      x.id !==
+                      restored.id
+                  ),
+                ]);
+
+                setView("all");
+
+                setActiveCollection(
+                  restored.collection ??
+                    null
+                );
+              }}
+            />
+          ) : filtered.length === 0 ? (
+            <div className="empty">
+              <div>⌕</div>
+
+              <h3>
+                {search
+                  ? "No matching items"
+                  : "Your vault is empty"}
+              </h3>
+
+              <p>
+                {search
+                  ? "Try another keyword, tag, or content type."
+                  : "Use Capture to add your first item."}
+              </p>
+            </div>
+          ) : (
+            <div
+              className={`cards ${
+                layout === "list"
+                  ? "list"
+                  : ""
+              }`}
+            >
+              {filtered.map((x) => (
+                <article
+                  className="card"
+                  key={x.id}
+                  draggable
+                  onDragStart={(e) => {
+                    e.dataTransfer.setData(
+                      "text/my-vault-item",
+                      x.id
+                    );
+
+                    e.dataTransfer.setData(
+                      "text/plain",
+                      x.id
+                    );
+
+                    e.dataTransfer.effectAllowed =
+                      "move";
+                  }}
+                >
+                  <div
+                    className={`card-top ${
+                      x.mediaUrl
+                        ? "has-media"
+                        : ""
+                    }`}
+                  >
+                    {x.mediaUrl &&
+                      isImage(x) && (
+                        <img
+                          src={x.mediaUrl}
+                          alt=""
+                          loading="lazy"
+                        />
+                      )}
+
+                    {x.mediaUrl &&
+                      isVideo(x) && (
+                        <video
+                          src={x.mediaUrl}
+                          muted
+                          playsInline
+                          preload="metadata"
+                        />
+                      )}
+
+                    <span className="type-badge">
+                      {typeIcon[x.type]}{" "}
+                      {typeLabel[x.type]}
+                    </span>
+
+                    <button
+                      className={`favorite ${
+                        x.favorite
+                          ? "on"
+                          : ""
+                      }`}
+                      onClick={() =>
+                        toggleFavorite(
+                          x.id
+                        )
+                      }
+                    >
+                      {x.favorite
+                        ? "★"
+                        : "☆"}
+                    </button>
+                  </div>
+
+                  <div className="card-body">
+                    <h3>{x.title}</h3>
+
+                    <p>
+                      {x.fileName
+                        ? `${x.fileName}${
+                            x.file_size
+                              ? ` · ${formatBytes(
+                                  x.file_size
+                                )}`
+                              : ""
+                          }`
+                        : x.content}
+                    </p>
+
+                    <div className="tags">
+                      {x.tags.map((t) => (
+                        <span
+                          className="tag"
+                          key={t}
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+
+                    <div className="card-foot">
+                      <span>{x.date}</span>
+
+                      <div className="card-actions">
+                        <button
+                          title="Edit"
+                          onClick={() =>
+                            openEditor(x)
+                          }
+                        >
+                          ✎
+                        </button>
+
+                        <button
+                          title="Open"
+                          onClick={() =>
+                            openItem(x)
+                          }
+                        >
+                          ↗
+                        </button>
+
+                        {collections.length >
+                          0 && (
+                          <select
+                            className="collection-select"
+                            value={
+                              x.collection ??
+                              ""
+                            }
+                            onChange={(e) => {
+                              const value =
+                                e.target.value;
+
+                              if (value) {
+                                moveToCollection(
+                                  x.id,
+                                  value
+                                );
+                              }
+                            }}
+                            title="Move to collection"
+                          >
+                            <option value="">
+                              Move…
+                            </option>
+
+                            {collections.map(
+                              (c) => (
+                                <option
+                                  key={c}
+                                  value={c}
+                                >
+                                  {c}
+                                </option>
+                              )
+                            )}
+                          </select>
+                        )}
+
+                        <button
+                          title="Delete"
+                          className="danger-action"
+                          onClick={() =>
+                            deleteItem(
+                              x.id
+                            )
+                          }
+                        >
+                          ⌫
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
         </section>
       </main>
-      <nav className="mobile-nav"><button className={`mobile-nav-item ${view==="all"?"active":""}`} onClick={()=>setViewAndReset("all")}><span>⌂</span><small>Home</small></button><button className={`mobile-nav-item ${view==="notes"?"active":""}`} onClick={()=>setViewAndReset("notes")}><span>▤</span><small>Notes</small></button><button className="mobile-capture" onClick={()=>setModal("capture")}><span>+</span></button><button className={`mobile-nav-item ${view==="favorites"?"active":""}`} onClick={()=>setViewAndReset("favorites")}><span>★</span><small>Saved</small></button><button className="mobile-nav-item" onClick={()=>setMobileMenuOpen(true)}><span>☰</span><small>Menu</small></button></nav>
-      {mobileMenuOpen&&<div className="mobile-drawer-backdrop" onMouseDown={e=>e.target===e.currentTarget&&setMobileMenuOpen(false)}><aside className="mobile-drawer"><div className="mobile-drawer-head"><div className="brand-mark"><span/><i/></div><div><strong>My VaulT</strong><small>Personal knowledge vault</small></div><button onClick={()=>setMobileMenuOpen(false)}>×</button></div><button className="drawer-capture" onClick={()=>{setMobileMenuOpen(false);setModal("capture")}}>＋ Capture</button><div className="drawer-section-label">Vault</div><nav className="drawer-nav">{[["all","⌂","All items",items.length],["notes","▤","Notes",items.filter(x=>x.type==="note").length],["links","↗","Links",items.filter(x=>x.type==="link").length],["media","◉","Media",items.filter(x=>x.type==="media").length],["files","□","Files",items.filter(x=>x.type==="file").length],["favorites","★","Favorites",items.filter(x=>x.favorite).length],["trash","♻","Recycle Bin",""]].map(([key,icon,label,count])=><button key={String(key)} className={view===key?"active":""} onClick={()=>setViewAndReset(String(key))}><span>{icon}</span><b>{label}</b><em>{count}</em></button>)}</nav><div className="drawer-section-label">Collections</div><div className="drawer-collections">{collections.map(c=><button key={c} className={activeCollection===c?"active":""} onClick={()=>{setActiveCollection(activeCollection===c?null:c);setMobileMenuOpen(false)}}><i/>{c}</button>)}<button className="drawer-new" onClick={()=>{setMobileMenuOpen(false);void createCollection()}}>＋ New collection</button></div><div className="drawer-footer"><button onClick={()=>{setMobileMenuOpen(false);setModal("settings")}}>⚙ Settings</button><button onClick={()=>{setMobileMenuOpen(false);setModal("account")}}>◉ Account</button><button onClick={()=>setTheme(theme==="dark"?"light":"dark")}>◐ Appearance <span>{theme==="dark"?"Dark":"Light"}</span></button></div></aside></div>}
-      {modal==="capture"&&<div className="modal-backdrop open" onMouseDown={e=>e.target===e.currentTarget&&setModal(null)}><section className="modal capture-modal"><button className="modal-close" onClick={()=>setModal(null)}>×</button><div className="modal-head"><span className="modal-icon gradient">+</span><div><h2>Capture something</h2><p>Choose the fastest way to add it to your vault.</p></div></div><div className="capture-options">{([ ["note","✎","Quick note","Write an idea or reminder"],["link","↗","Save link","URL, reel, post or article"],["media","◉","Photo / video","Camera or media from device"],["file","□","Upload file","PDF, document or any file"]] as const).map(([type,icon,label,desc])=><button className="capture-option" key={type} onClick={()=>type === "media" || type === "file" ? document.getElementById("vault-file-input")?.click() : createItem(type)}><span>{icon}</span><b>{label}</b><small>{desc}</small></button>)}</div><div className="capture-inputs"><label>📷 Take photo<input type="file" accept="image/*" capture="environment" onChange={e=>{const file=e.target.files?.[0];if(file) void handleSelectedFile(file);e.currentTarget.value=""}}/></label><label>🎥 Take video<input type="file" accept="video/*" capture="environment" onChange={e=>{const file=e.target.files?.[0];if(file) void handleSelectedFile(file);e.currentTarget.value=""}}/></label><label>📁 Choose any file<input id="vault-file-input" type="file" accept="*/*" onChange={e=>{const file=e.target.files?.[0];if(file) void handleSelectedFile(file);e.currentTarget.value=""}}/></label></div></section></div>}
-      {modal==="editor"&&editingId&&<div className="modal-backdrop open" onMouseDown={e=>e.target===e.currentTarget&&setModal(null)}><section className="modal editor-modal"><button className="modal-close" onClick={()=>setModal(null)}>×</button><div className="modal-head"><span className="modal-icon">{typeIcon[items.find(x=>x.id===editingId)?.type??"note"]}</span><div><h2>Edit item</h2><p>Changes are saved to your Supabase vault.</p></div></div><form onSubmit={saveEdit}><label>Title<input value={form.title} onChange={e=>setForm({...form,title:e.target.value})} required/></label><label>Tags<input value={form.tags} onChange={e=>setForm({...form,tags:e.target.value})} placeholder="EV, Battery, Project"/></label>{items.find(x=>x.id===editingId)?.type==="link"&&<label>URL<input type="url" value={form.url} onChange={e=>setForm({...form,url:e.target.value})} placeholder="https://..."/></label>}<label>Content / description<textarea rows={7} value={form.content} onChange={e=>setForm({...form,content:e.target.value})} placeholder="Write or paste content..."/></label><div className="editor-actions"><button type="button" className="ghost" onClick={()=>setModal(null)}>Cancel</button><button className="primary" type="submit" disabled={saving}>{saving?"Saving…":"Save changes"}</button></div></form></section></div>}
-      {modal==="viewer"&&viewerItem&&<div className="modal-backdrop open" onMouseDown={e=>e.target===e.currentTarget&&setModal(null)}><section className="modal viewer-modal"><button className="modal-close" onClick={()=>setModal(null)}>×</button><div className="modal-head"><span className="modal-icon">◉</span><div><h2>{viewerItem.title}</h2><p>{viewerItem.fileName || "Media preview"}</p></div></div><div className="media-viewer">{viewerItem.mediaUrl&&isImage(viewerItem)&&<img src={viewerItem.mediaUrl} alt={viewerItem.title}/>} {viewerItem.mediaUrl&&isVideo(viewerItem)&&<video src={viewerItem.mediaUrl} controls playsInline/>} {viewerItem.mediaUrl&&isAudio(viewerItem)&&<audio src={viewerItem.mediaUrl} controls/>}</div><div className="editor-actions"><button className="ghost" onClick={()=>setModal(null)}>Close</button>{viewerItem.mediaUrl&&<button className="primary" onClick={()=>window.open(viewerItem.mediaUrl!,"_blank","noopener,noreferrer")}>Open full size</button>}</div></section></div>}
-      {modal==="settings"&&<div className="modal-backdrop open" onMouseDown={e=>e.target===e.currentTarget&&setModal(null)}><section className="modal settings-modal"><button className="modal-close" onClick={()=>setModal(null)}>×</button><div className="modal-head"><span className="modal-icon">⚙</span><div><h2>Settings</h2><p>Control the vault experience.</p></div></div><div className="settings-list"><button onClick={()=>setTheme(theme==="dark"?"light":"dark")}><span>◐</span><div><b>Appearance</b><small>{theme==="dark"?"Dark mode":"Light mode"}</small></div><strong>Change</strong></button><button onClick={()=>window.location.reload()}><span>↻</span><div><b>Refresh vault</b><small>Reload saved items and collections</small></div><strong>Refresh</strong></button></div></section></div>}
-      {modal==="account"&&<div className="modal-backdrop open" onMouseDown={e=>e.target===e.currentTarget&&setModal(null)}><section className="modal settings-modal"><button className="modal-close" onClick={()=>setModal(null)}>×</button><div className="modal-head"><div className="avatar large">M</div><div><h2>Account</h2><p>{userEmail || "Signed in"}</p></div></div><div className="settings-list"><button onClick={async()=>{await supabase.auth.signOut();window.location.reload()}}><span>↪</span><div><b>Sign out</b><small>End this session on this device</small></div><strong>Sign out</strong></button></div></section></div>}
-      {toast&&<div className="toast show">{toast}</div>}
+
+      <nav className="mobile-nav">
+        <button
+          className={`mobile-nav-item ${
+            view === "all"
+              ? "active"
+              : ""
+          }`}
+          onClick={() =>
+            setViewAndReset("all")
+          }
+        >
+          <span>⌂</span>
+          <small>Home</small>
+        </button>
+
+        <button
+          className={`mobile-nav-item ${
+            view === "notes"
+              ? "active"
+              : ""
+          }`}
+          onClick={() =>
+            setViewAndReset("notes")
+          }
+        >
+          <span>▤</span>
+          <small>Notes</small>
+        </button>
+
+        <button
+          className="mobile-capture"
+          onClick={() =>
+            setModal("capture")
+          }
+        >
+          <span>+</span>
+        </button>
+
+        <button
+          className={`mobile-nav-item ${
+            view === "favorites"
+              ? "active"
+              : ""
+          }`}
+          onClick={() =>
+            setViewAndReset(
+              "favorites"
+            )
+          }
+        >
+          <span>★</span>
+          <small>Saved</small>
+        </button>
+
+        <button
+          className="mobile-nav-item"
+          onClick={() =>
+            setMobileMenuOpen(true)
+          }
+        >
+          <span>☰</span>
+          <small>Menu</small>
+        </button>
+      </nav>
+
+      {mobileMenuOpen && (
+        <div
+          className="mobile-drawer-backdrop"
+          onMouseDown={(e) =>
+            e.target ===
+              e.currentTarget &&
+            setMobileMenuOpen(false)
+          }
+        >
+          <aside className="mobile-drawer">
+            <div className="mobile-drawer-head">
+              <div className="brand-mark">
+                <span />
+                <i />
+              </div>
+
+              <div>
+                <strong>
+                  My VaulT
+                </strong>
+
+                <small>
+                  Personal knowledge vault
+                </small>
+              </div>
+
+              <button
+                onClick={() =>
+                  setMobileMenuOpen(false)
+                }
+              >
+                ×
+              </button>
+            </div>
+
+            <button
+              className="drawer-capture"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                setModal("capture");
+              }}
+            >
+              ＋ Capture
+            </button>
+
+            <div className="drawer-section-label">
+              Vault
+            </div>
+
+            <nav className="drawer-nav">
+              {[
+                [
+                  "all",
+                  "⌂",
+                  "All items",
+                  items.length,
+                ],
+                [
+                  "notes",
+                  "▤",
+                  "Notes",
+                  items.filter(
+                    (x) =>
+                      x.type === "note"
+                  ).length,
+                ],
+                [
+                  "links",
+                  "↗",
+                  "Links",
+                  items.filter(
+                    (x) =>
+                      x.type === "link"
+                  ).length,
+                ],
+                [
+                  "media",
+                  "◉",
+                  "Media",
+                  items.filter(
+                    (x) =>
+                      x.type === "media"
+                  ).length,
+                ],
+                [
+                  "files",
+                  "□",
+                  "Files",
+                  items.filter(
+                    (x) =>
+                      x.type === "file"
+                  ).length,
+                ],
+                [
+                  "favorites",
+                  "★",
+                  "Favorites",
+                  items.filter(
+                    (x) => x.favorite
+                  ).length,
+                ],
+                [
+                  "trash",
+                  "♻",
+                  "Recycle Bin",
+                  "",
+                ],
+              ].map(
+                ([
+                  key,
+                  icon,
+                  label,
+                  count,
+                ]) => (
+                  <button
+                    key={String(key)}
+                    className={
+                      view === key
+                        ? "active"
+                        : ""
+                    }
+                    onClick={() =>
+                      setViewAndReset(
+                        String(key)
+                      )
+                    }
+                  >
+                    <span>{icon}</span>
+                    <b>{label}</b>
+                    <em>{count}</em>
+                  </button>
+                )
+              )}
+            </nav>
+
+            <div className="drawer-section-label">
+              Collections
+            </div>
+
+            <div className="drawer-collections">
+              {collections.map((c) => (
+                <button
+                  key={c}
+                  className={
+                    activeCollection ===
+                    c
+                      ? "active"
+                      : ""
+                  }
+                  onClick={() => {
+                    setActiveCollection(
+                      activeCollection ===
+                        c
+                        ? null
+                        : c
+                    );
+
+                    setMobileMenuOpen(
+                      false
+                    );
+                  }}
+                >
+                  <i />
+                  {c}
+                </button>
+              ))}
+
+              <button
+                className="drawer-new"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  void createCollection();
+                }}
+              >
+                ＋ New collection
+              </button>
+            </div>
+
+            <div className="drawer-footer">
+              <button
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  setModal("settings");
+                }}
+              >
+                ⚙ Settings
+              </button>
+
+              <button
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  setModal("account");
+                }}
+              >
+                ◉ Account
+              </button>
+
+              <button
+                onClick={() =>
+                  setTheme(
+                    theme === "dark"
+                      ? "light"
+                      : "dark"
+                  )
+                }
+              >
+                ◐ Appearance{" "}
+                <span>
+                  {theme === "dark"
+                    ? "Dark"
+                    : "Light"}
+                </span>
+              </button>
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {modal === "capture" && (
+        <div
+          className="modal-backdrop open"
+          onMouseDown={(e) =>
+            e.target ===
+              e.currentTarget &&
+            setModal(null)
+          }
+        >
+          <section className="modal capture-modal">
+            <button
+              className="modal-close"
+              onClick={() =>
+                setModal(null)
+              }
+            >
+              ×
+            </button>
+
+            <div className="modal-head">
+              <span className="modal-icon gradient">
+                +
+              </span>
+
+              <div>
+                <h2>
+                  Capture something
+                </h2>
+
+                <p>
+                  Choose the fastest way
+                  to add it to your vault.
+                </p>
+              </div>
+            </div>
+
+            <div className="capture-options">
+              {([
+                [
+                  "note",
+                  "✎",
+                  "Quick note",
+                  "Write an idea or reminder",
+                ],
+                [
+                  "link",
+                  "↗",
+                  "Save link",
+                  "URL, reel, post or article",
+                ],
+                [
+                  "media",
+                  "◉",
+                  "Photo / video",
+                  "Camera or media from device",
+                ],
+                [
+                  "file",
+                  "□",
+                  "Upload file",
+                  "PDF, document or any file",
+                ],
+              ] as const).map(
+                ([
+                  type,
+                  icon,
+                  label,
+                  desc,
+                ]) => (
+                  <button
+                    className="capture-option"
+                    key={type}
+                    onClick={() =>
+                      type ===
+                        "media" ||
+                      type === "file"
+                        ? document
+                            .getElementById(
+                              "vault-file-input"
+                            )
+                            ?.click()
+                        : createItem(
+                            type
+                          )
+                    }
+                  >
+                    <span>{icon}</span>
+                    <b>{label}</b>
+                    <small>
+                      {desc}
+                    </small>
+                  </button>
+                )
+              )}
+            </div>
+
+            <div className="capture-inputs">
+              <label>
+                📷 Take photo
+                <input
+                  type="file"
+                  accept="image/*"
+                  capture="environment"
+                  onChange={(e) => {
+                    const file =
+                      e.target.files?.[0];
+
+                    if (file) {
+                      void handleSelectedFile(
+                        file
+                      );
+                    }
+
+                    e.currentTarget.value =
+                      "";
+                  }}
+                />
+              </label>
+
+              <label>
+                🎥 Take video
+                <input
+                  type="file"
+                  accept="video/*"
+                  capture="environment"
+                  onChange={(e) => {
+                    const file =
+                      e.target.files?.[0];
+
+                    if (file) {
+                      void handleSelectedFile(
+                        file
+                      );
+                    }
+
+                    e.currentTarget.value =
+                      "";
+                  }}
+                />
+              </label>
+
+              <label>
+                📁 Choose any file
+                <input
+                  id="vault-file-input"
+                  type="file"
+                  accept="*/*"
+                  onChange={(e) => {
+                    const file =
+                      e.target.files?.[0];
+
+                    if (file) {
+                      void handleSelectedFile(
+                        file
+                      );
+                    }
+
+                    e.currentTarget.value =
+                      "";
+                  }}
+                />
+              </label>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {modal === "editor" &&
+        editingId && (
+          <div
+            className="modal-backdrop open"
+            onMouseDown={(e) =>
+              e.target ===
+                e.currentTarget &&
+              setModal(null)
+            }
+          >
+            <section className="modal editor-modal">
+              <button
+                className="modal-close"
+                onClick={() =>
+                  setModal(null)
+                }
+              >
+                ×
+              </button>
+
+              <div className="modal-head">
+                <span className="modal-icon">
+                  {
+                    typeIcon[
+                      items.find(
+                        (x) =>
+                          x.id ===
+                          editingId
+                      )?.type ??
+                        "note"
+                    ]
+                  }
+                </span>
+
+                <div>
+                  <h2>
+                    Edit item
+                  </h2>
+
+                  <p>
+                    Changes are saved to
+                    your Supabase vault.
+                  </p>
+                </div>
+              </div>
+
+              <form
+                onSubmit={saveEdit}
+              >
+                <label>
+                  Title
+                  <input
+                    value={form.title}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        title:
+                          e.target.value,
+                      })
+                    }
+                    required
+                  />
+                </label>
+
+                <label>
+                  Tags
+                  <input
+                    value={form.tags}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        tags:
+                          e.target.value,
+                      })
+                    }
+                    placeholder="EV, Battery, Project"
+                  />
+                </label>
+
+                {items.find(
+                  (x) =>
+                    x.id ===
+                    editingId
+                )?.type ===
+                  "link" && (
+                  <label>
+                    URL
+                    <input
+                      type="url"
+                      value={form.url}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          url:
+                            e.target.value,
+                        })
+                      }
+                      placeholder="https://..."
+                    />
+                  </label>
+                )}
+
+                <label>
+                  Content / description
+                  <textarea
+                    rows={7}
+                    value={form.content}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        content:
+                          e.target.value,
+                      })
+                    }
+                    placeholder="Write or paste content..."
+                  />
+                </label>
+
+                <div className="editor-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() =>
+                      setModal(null)
+                    }
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    className="primary"
+                    type="submit"
+                    disabled={saving}
+                  >
+                    {saving
+                      ? "Saving…"
+                      : "Save changes"}
+                  </button>
+                </div>
+              </form>
+            </section>
+          </div>
+        )}
+
+      {modal === "editor" &&
+        !editingId && (
+          <div
+            className="modal-backdrop open"
+            onMouseDown={(e) =>
+              e.target ===
+                e.currentTarget &&
+              setModal(null)
+            }
+          >
+            <section className="modal editor-modal">
+              <button
+                className="modal-close"
+                onClick={() =>
+                  setModal(null)
+                }
+              >
+                ×
+              </button>
+
+              <div className="modal-head">
+                <span className="modal-icon">
+                  {form.url
+                    ? "↗"
+                    : "✎"}
+                </span>
+
+                <div>
+                  <h2>
+                    Save shared content
+                  </h2>
+
+                  <p>
+                    Review the content
+                    before saving it to
+                    your vault.
+                  </p>
+                </div>
+              </div>
+
+              <form
+                onSubmit={
+                  saveSharedContent
+                }
+              >
+                <label>
+                  Title
+                  <input
+                    value={form.title}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        title:
+                          e.target.value,
+                      })
+                    }
+                    required
+                  />
+                </label>
+
+                <label>
+                  Tags
+                  <input
+                    value={form.tags}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        tags:
+                          e.target.value,
+                      })
+                    }
+                    placeholder="Shared, YouTube, EV..."
+                  />
+                </label>
+
+                {form.url && (
+                  <label>
+                    URL
+                    <input
+                      type="url"
+                      value={form.url}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          url:
+                            e.target.value,
+                        })
+                      }
+                      placeholder="https://..."
+                    />
+                  </label>
+                )}
+
+                <label>
+                  Content / description
+                  <textarea
+                    rows={7}
+                    value={form.content}
+                    onChange={(e) =>
+                      setForm({
+                        ...form,
+                        content:
+                          e.target.value,
+                      })
+                    }
+                    placeholder="Shared text..."
+                  />
+                </label>
+
+                <div className="editor-actions">
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() =>
+                      setModal(null)
+                    }
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    className="primary"
+                    type="submit"
+                    disabled={saving}
+                  >
+                    {saving
+                      ? "Saving…"
+                      : "Save to My VaulT"}
+                  </button>
+                </div>
+              </form>
+            </section>
+          </div>
+        )}
+
+      {modal === "viewer" &&
+        viewerItem && (
+          <div
+            className="modal-backdrop open"
+            onMouseDown={(e) =>
+              e.target ===
+                e.currentTarget &&
+              setModal(null)
+            }
+          >
+            <section className="modal viewer-modal">
+              <button
+                className="modal-close"
+                onClick={() =>
+                  setModal(null)
+                }
+              >
+                ×
+              </button>
+
+              <div className="modal-head">
+                <span className="modal-icon">
+                  ◉
+                </span>
+
+                <div>
+                  <h2>
+                    {viewerItem.title}
+                  </h2>
+
+                  <p>
+                    {viewerItem.fileName ||
+                      "Media preview"}
+                  </p>
+                </div>
+              </div>
+
+              <div className="media-viewer">
+                {viewerItem.mediaUrl &&
+                  isImage(
+                    viewerItem
+                  ) && (
+                    <img
+                      src={
+                        viewerItem.mediaUrl
+                      }
+                      alt={
+                        viewerItem.title
+                      }
+                    />
+                  )}
+
+                {viewerItem.mediaUrl &&
+                  isVideo(
+                    viewerItem
+                  ) && (
+                    <video
+                      src={
+                        viewerItem.mediaUrl
+                      }
+                      controls
+                      playsInline
+                    />
+                  )}
+
+                {viewerItem.mediaUrl &&
+                  isAudio(
+                    viewerItem
+                  ) && (
+                    <audio
+                      src={
+                        viewerItem.mediaUrl
+                      }
+                      controls
+                    />
+                  )}
+              </div>
+
+              <div className="editor-actions">
+                <button
+                  className="ghost"
+                  onClick={() =>
+                    setModal(null)
+                  }
+                >
+                  Close
+                </button>
+
+                {viewerItem.mediaUrl && (
+                  <button
+                    className="primary"
+                    onClick={() =>
+                      window.open(
+                        viewerItem.mediaUrl!,
+                        "_blank",
+                        "noopener,noreferrer"
+                      )
+                    }
+                  >
+                    Open full size
+                  </button>
+                )}
+              </div>
+            </section>
+          </div>
+        )}
+
+      {modal === "settings" && (
+        <div
+          className="modal-backdrop open"
+          onMouseDown={(e) =>
+            e.target ===
+              e.currentTarget &&
+            setModal(null)
+          }
+        >
+          <section className="modal settings-modal">
+            <button
+              className="modal-close"
+              onClick={() =>
+                setModal(null)
+              }
+            >
+              ×
+            </button>
+
+            <div className="modal-head">
+              <span className="modal-icon">
+                ⚙
+              </span>
+
+              <div>
+                <h2>Settings</h2>
+
+                <p>
+                  Control the vault
+                  experience.
+                </p>
+              </div>
+            </div>
+
+            <div className="settings-list">
+              <button
+                onClick={() =>
+                  setTheme(
+                    theme === "dark"
+                      ? "light"
+                      : "dark"
+                  )
+                }
+              >
+                <span>◐</span>
+
+                <div>
+                  <b>Appearance</b>
+                  <small>
+                    {theme === "dark"
+                      ? "Dark mode"
+                      : "Light mode"}
+                  </small>
+                </div>
+
+                <strong>
+                  Change
+                </strong>
+              </button>
+
+              <button
+                onClick={() =>
+                  window.location.reload()
+                }
+              >
+                <span>↻</span>
+
+                <div>
+                  <b>
+                    Refresh vault
+                  </b>
+
+                  <small>
+                    Reload saved items
+                    and collections
+                  </small>
+                </div>
+
+                <strong>
+                  Refresh
+                </strong>
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {modal === "account" && (
+        <div
+          className="modal-backdrop open"
+          onMouseDown={(e) =>
+            e.target ===
+              e.currentTarget &&
+            setModal(null)
+          }
+        >
+          <section className="modal settings-modal">
+            <button
+              className="modal-close"
+              onClick={() =>
+                setModal(null)
+              }
+            >
+              ×
+            </button>
+
+            <div className="modal-head">
+              <div className="avatar large">
+                M
+              </div>
+
+              <div>
+                <h2>Account</h2>
+                <p>
+                  {userEmail ||
+                    "Signed in"}
+                </p>
+              </div>
+            </div>
+
+            <div className="settings-list">
+              <button
+                onClick={async () => {
+                  await supabase.auth.signOut();
+                  window.location.reload();
+                }}
+              >
+                <span>↪</span>
+
+                <div>
+                  <b>Sign out</b>
+                  <small>
+                    End this session on
+                    this device
+                  </small>
+                </div>
+
+                <strong>
+                  Sign out
+                </strong>
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {toast && (
+        <div className="toast show">
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
