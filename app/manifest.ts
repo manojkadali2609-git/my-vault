@@ -34,7 +34,19 @@ export default function manifest(): MetadataRoute.Manifest {
         title: "title",
         text: "text",
         url: "url",
-        files: [{ name: "files", accept: ["*/*"] }],
+        files: [
+          {
+            name: "files",
+            accept: [
+              "image/*",
+              "video/*",
+              "audio/*",
+              "application/pdf",
+              "text/plain",
+              "*/*",
+            ],
+          },
+        ],
       },
     },
   };
