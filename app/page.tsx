@@ -1,5 +1,4 @@
-PS C:\Users\manoj\my-vault> cd C:\Users\manoj\my-vault
-PS C:\Users\manoj\my-vault> Get-Content app\page.tsx
+
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
