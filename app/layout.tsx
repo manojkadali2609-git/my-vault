@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist } from "next/font/google";
 import { ThemeProvider } from "next-themes";
+import SWRegister from "./sw-register";
 import "./globals.css";
 
 const defaultUrl = process.env.VERCEL_URL
@@ -10,7 +11,8 @@ const defaultUrl = process.env.VERCEL_URL
 export const metadata: Metadata = {
   metadataBase: new URL(defaultUrl),
   title: "My VaulT — Personal Reference Vault",
-  description: "A private, searchable personal reference vault for notes, links, media, and files.",
+  description:
+    "A private, searchable personal reference vault for notes, links, media, and files.",
 };
 
 const geistSans = Geist({
@@ -27,6 +29,8 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className={`${geistSans.className} antialiased`}>
+        <SWRegister />
+
         <ThemeProvider
           attribute="class"
           defaultTheme="system"
